@@ -12,7 +12,7 @@ else
   exit "$code"
 fi
 branch="codex/crier-$new"
-if gh pr list --head "$branch" --json number --jq '.[0].number' | rg '[0-9]' >/dev/null; then exit 0; fi
+if gh pr list --head "$branch" --json number --jq '.[0].number' | grep '[0-9]' >/dev/null; then exit 0; fi
 git switch -c "$branch"
 printf '%s\n' "$new" > plugin/crier.version
 # Documentation and install version always move with the registry pin.

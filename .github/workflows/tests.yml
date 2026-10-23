@@ -20,10 +20,10 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == macOS ]]; then
-            brew install luajit luarocks shellcheck actionlint ripgrep
+            brew install luajit luarocks shellcheck actionlint
           else
             sudo apt-get update
-            sudo apt-get install -y luajit libluajit-5.1-dev liblua5.1-0-dev luarocks shellcheck ripgrep
+            sudo apt-get install -y luajit libluajit-5.1-dev liblua5.1-0-dev luarocks shellcheck
             go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
@@ -71,11 +71,11 @@ jobs:
             cd plugin
             busted --lua=luajit --helper=spec/helper.lua --exclude-tags=posix spec
             mkdir -p dist
-            luajit tools/bundle.lua dist/crier-obs.lua 1.1.0-rc.0
-            luajit tools/smoke.lua dist/crier-obs.lua --version 1.1.0-rc.0 --pin "$(cat crier.version)"
+            luajit tools/bundle.lua dist/crier-obs.lua 0.0.0-ci
+            luajit tools/smoke.lua dist/crier-obs.lua --version 0.0.0-ci --pin "$(cat crier.version)"
           else
             cd plugin
             mkdir -p dist
-            luajit tools/bundle.lua dist/crier-obs.lua 1.1.0-rc.0
-            luajit tools/smoke.lua dist/crier-obs.lua --version 1.1.0-rc.0 --pin "$(cat crier.version)"
+            luajit tools/bundle.lua dist/crier-obs.lua 0.0.0-ci
+            luajit tools/smoke.lua dist/crier-obs.lua --version 0.0.0-ci --pin "$(cat crier.version)"
           fi

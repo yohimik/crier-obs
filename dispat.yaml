@@ -31,7 +31,9 @@ scripts:
   commit: dispat commit --tag --push
   github: dispat github
   build: sh tools/build.sh
-  announce: sh tools/announce.sh
+  announce: |
+    set -eu
+    printf 'released=true\nversion=%s\n' "$DISPAT_NEW_VERSION" >> "${GITHUB_OUTPUT:-/dev/null}"
   lint: sh tools/lint.sh
   tests: sh tools/test.sh
   registry: sh tools/registry_gate.sh

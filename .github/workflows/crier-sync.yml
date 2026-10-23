@@ -18,7 +18,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y luajit luarocks libluajit-5.1-dev liblua5.1-0-dev shellcheck ripgrep
+          sudo apt-get install -y luajit luarocks libluajit-5.1-dev liblua5.1-0-dev shellcheck
           luarocks --lua-version=5.1 --local install busted 2.3.0
           luarocks --lua-version=5.1 --local install luacov 0.17.0
           luarocks --lua-version=5.1 --local install luacheck 1.2.0
