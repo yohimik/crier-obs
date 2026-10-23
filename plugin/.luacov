@@ -1,0 +1,1 @@
+return {include = {"src/crier_obs"}, exclude = {"spec/", "registry/"}, includeuntestedfiles = {"src/crier_obs"}, statsfile = "luacov.stats.out", reportfile = "luacov.report.out"}

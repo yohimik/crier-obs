@@ -1,0 +1,8 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;width:1080px;height:1080px;background:#101826;color:#fff;font-family:sans-serif}
+main{height:100%;padding:110px;display:flex;flex-direction:column;justify-content:center}
+.badge{font-size:28px;color:#ff6b7a;letter-spacing:.2em;text-transform:uppercase}h1{font-size:88px;line-height:1.06;margin:42px 0;overflow-wrap:anywhere}
+p{font-size:34px;color:#bac9de;line-height:1.4}.url{margin-top:70px;font-size:27px;color:#8ed7ff;overflow-wrap:anywhere}
+</style></head><body><main><div class="badge">{{ .event }}</div><h1>{{ .title }}</h1>
+<p>{{ .game }}</p><p>{{ .uptime }}</p><div class="url">{{ .url }}</div></main></body></html>

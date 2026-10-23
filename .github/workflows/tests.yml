@@ -1,0 +1,81 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Install native tools
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            brew install luajit luarocks shellcheck actionlint ripgrep
+          else
+            sudo apt-get update
+            sudo apt-get install -y luajit libluajit-5.1-dev liblua5.1-0-dev luarocks shellcheck ripgrep
+            go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install Lua dependencies
+        shell: bash
+        run: |
+          args=(--lua-version=5.1)
+          if [[ "$RUNNER_OS" == macOS ]]; then args+=(--lua-dir="$(brew --prefix luajit)"); fi
+          luarocks "${args[@]}" --local install busted 2.3.0
+          luarocks "${args[@]}" --local install luacov 0.17.0
+          luarocks "${args[@]}" --local install luacheck 1.2.0
+          echo "$HOME/.luarocks/bin" >> "$GITHUB_PATH"
+
+      - uses: yohimik/dispat@v1
+      - name: Required gates
+        shell: bash
+        run: |
+          args=(--lua-version=5.1)
+          if [[ "$RUNNER_OS" == macOS ]]; then args+=(--lua-dir="$(brew --prefix luajit)"); fi
+          eval "$(luarocks "${args[@]}" path)"
+          for gate in lint shellcheck actionlint registry tests bundle-check; do
+            dispat run "$gate" --since all
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.os }}
+          path: plugin/luacov.report.out
+  windows:
+    runs-on: windows-latest
+    continue-on-error: true # Promote after two verified green Windows runs.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: step-security/msvc-dev-cmd@v1
+      - uses: leafo/gh-actions-lua@v11
+        with: {luaVersion: luajit-2.1}
+      - uses: leafo/gh-actions-luarocks@v5
+      - name: Build native Windows fake
+        shell: bash
+        run: go build -o plugin/spec/fakes/crier_win/crier.exe plugin/spec/fakes/crier_win/main.go
+      - name: Behavioural tests
+        shell: bash
+        run: |
+          if luarocks install busted 2.3.0 && luarocks install luacov 0.17.0; then
+            cd plugin
+            busted --lua=luajit --helper=spec/helper.lua --exclude-tags=posix spec
+            mkdir -p dist
+            luajit tools/bundle.lua dist/crier-obs.lua 1.1.0-rc.0
+            luajit tools/smoke.lua dist/crier-obs.lua --version 1.1.0-rc.0 --pin "$(cat crier.version)"
+          else
+            cd plugin
+            mkdir -p dist
+            luajit tools/bundle.lua dist/crier-obs.lua 1.1.0-rc.0
+            luajit tools/smoke.lua dist/crier-obs.lua --version 1.1.0-rc.0 --pin "$(cat crier.version)"
+          fi

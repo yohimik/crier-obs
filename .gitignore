@@ -1,0 +1,7 @@
+.idea/
+.DS_Store
+plugin/dist/
+plugin/.cache/
+.luacov/
+luacov.*
+plugin/luacov.*

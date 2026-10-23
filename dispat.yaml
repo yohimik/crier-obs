@@ -1,0 +1,40 @@
+tagFormat: v{version}
+initials: {crier-obs: 1.0.0}
+parser: {allowedChannels: [rc]}
+commitErrors: error
+packages:
+  crier-obs:
+    path: plugin
+    autoVersion: {manifests: none}
+    flow:
+      build: build
+      publish: [changelog, commit, github]
+      announce: announce
+changelog:
+  enabled: true
+  authors: {placement: both, exclude: ["*[bot]"]}
+  commitRefs: {placement: suffix, link: auto}
+commit:
+  enabled: true
+  push: true
+  name: github-actions[bot]
+  email: github-actions[bot]@users.noreply.github.com
+github:
+  enabled: true
+  authors: {placement: both, exclude: ["*[bot]"]}
+  commitRefs: {placement: suffix, link: auto}
+  footer: >-
+    Download crier-obs.lua from this release → OBS → Tools → Scripts → + → click Install crier.
+    Docs for this version: https://github.com/yohimik/crier-obs/tree/v${DISPAT_NEW_VERSION}/docs
+scripts:
+  changelog: dispat changelog
+  commit: dispat commit --tag --push
+  github: dispat github
+  build: sh tools/build.sh
+  announce: sh tools/announce.sh
+  lint: sh tools/lint.sh
+  tests: sh tools/test.sh
+  registry: sh tools/registry_gate.sh
+  bundle-check: sh tools/bundle_check.sh
+  shellcheck: shellcheck tools/*.sh spec/fakes/crier spec/fakes/security spec/fakes/secret-tool spec/fakes/install.sh
+  actionlint: actionlint ../.github/workflows/*.yml
