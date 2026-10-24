@@ -15,6 +15,9 @@ local function finished(code, stdout, stderr)
 		detach = function()
 			return { pid = 1 }
 		end,
+		cancel = function()
+			return true
+		end,
 	}
 end
 local function model()
@@ -107,7 +110,7 @@ describe("resolver and installer failure recovery", function()
 		assert(r.probe())
 		assert.equal("failed", r.tick().state)
 		result = finished(0, "not-a-version")
-		result.detach = function()
+		result.cancel = function()
 			detached = true
 		end
 		assert(r.probe())
@@ -121,11 +124,13 @@ describe("resolver and installer failure recovery", function()
 			},
 			env = { os = "Windows", path = "C:\\bin" },
 			spawner = {},
+			pin = "1.1.1",
 		})
 		assert.is_nil(missing.probe())
 		assert.equal("missing", missing.status().state)
 		local failed = resolver_module.new({
 			fs = fs,
+			pin = "1.1.1",
 			spawner = {
 				spawn = function()
 					return nil, err("spawn failed")
@@ -142,13 +147,14 @@ describe("resolver and installer failure recovery", function()
 			probe = function()
 				return {}
 			end,
-			tick = function()
+			status = function()
 				return status
 			end,
 		}
 		local installer = installer_module.new({
 			state_dir = "/state",
 			pin = "1.1.1",
+			log = log,
 			env = { os = "OSX" },
 			resolver = resolver,
 			spawner = {
@@ -175,6 +181,7 @@ describe("resolver and installer failure recovery", function()
 			local i = installer_module.new({
 				state_dir = "/state",
 				pin = "1.1.1",
+				log = log,
 				env = { os = "Linux" },
 				resolver = {},
 				spawner = {
@@ -194,6 +201,7 @@ describe("resolver and installer failure recovery", function()
 		local i = installer_module.new({
 			state_dir = "C:\\space dir",
 			pin = "1.1.1",
+			log = log,
 			env = { os = "Windows" },
 			resolver = {
 				probe = function()
@@ -211,10 +219,12 @@ describe("resolver and installer failure recovery", function()
 		assert.equal("failed", i.tick().state)
 		assert.equal("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", plans[1].executable)
 		assert.equal("-NoProfile", plans[1].args[1])
-		local invalid = installer_module.new({ state_dir = "/state", pin = "bad", env = {} })
+		local invalid = installer_module.new({ state_dir = "/state", pin = "bad", env = {}, log = log })
 		assert.is_nil(invalid.start())
 		local failure = installer_module.new({
 			state_dir = "/state",
+			pin = "1.1.1",
+			log = log,
 			spawner = {
 				spawn = function()
 					return nil, err()
@@ -227,12 +237,14 @@ describe("resolver and installer failure recovery", function()
 		local detached = false
 		local detach = installer_module.new({
 			state_dir = "/state",
+			pin = "1.1.1",
+			log = log,
 			env = {},
 			spawner = {
 				spawn = function()
 					return {
 						poll = function() end,
-						detach = function()
+						cancel = function()
 							detached = true
 						end,
 					}
@@ -306,7 +318,9 @@ describe("run execution failures and journals", function()
 							poll = function()
 								return nil, err("poll")
 							end,
-							kill = function() end,
+							cancel = function()
+								return true
+							end,
 						}
 					end,
 				},
@@ -349,7 +363,9 @@ describe("run execution failures and journals", function()
 				spawn = function()
 					return {
 						pid = 1,
-						kill = function() end,
+						cancel = function()
+							return true
+						end,
 						poll = function() end,
 						detach = function()
 							return nil, err("handoff")
@@ -450,6 +466,41 @@ describe("run execution failures and journals", function()
 		assert.is_truthy(files[a.journal])
 	end)
 
+	it("never adopts a run journaled before a reboot, and journals it as finished", function()
+		local fs, files = memoryfs()
+		local paths = { root = "/state", runs = "/state/runs", bin = "/state/bin", templates = "/state/templates",
+			template = "/state/templates/live.html", secrets = "/state/secrets" }
+		local clock = { now_wall = function()
+			return 50
+		end }
+		local before = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 7, boot_id = "boot-a" })
+		assert(before.init())
+		local run = assert(before.create("start"))
+		assert(before.journal(run, { state = "detached", pid = 4242 }))
+		assert.equal("boot-a", require("crier_obs.json").decode(files[run.journal]).boot_id)
+		local same = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 8, boot_id = "boot-a" })
+		assert.equal(1, #same.adopt())
+		local after = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 7, boot_id = "boot-b" })
+		assert.same({}, after.adopt())
+		local journal = require("crier_obs.json").decode(files[run.journal])
+		assert.equal("failed", journal.state)
+		assert.matches("result is unknown", journal.error, 1, true)
+		after.sweep(7, 0)
+		assert.is_nil(files[run.journal])
+		local unknown = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 9 })
+		local other = assert(unknown.create("end"))
+		assert(unknown.journal(other, { state = "detached", pid = 4343 }))
+		assert.equal(1, #runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 9, boot_id = "boot-c" }).adopt())
+		assert.has_error(function()
+			runs_module.new({ fs = fs, clock = clock, paths = paths })
+		end)
+	end)
+	it("identifies this boot on macOS and Linux #posix", function()
+		local id = require("crier_obs.ports.env").new({}).boot_id()
+		assert.is_string(id)
+		assert.equal(id, require("crier_obs.ports.env").new({}).boot_id())
+		assert.is_nil(require("crier_obs.ports.env").new({ platform = "Windows" }).boot_id())
+	end)
 	it("uses each operating system state convention and respects explicit paths", function()
 		local paths = require("crier_obs.state.paths")
 		local get = function(k)
@@ -464,13 +515,18 @@ describe("run execution failures and journals", function()
 		assert.equal("/explicit", paths.new({ state_dir = "/explicit" }).root)
 	end)
 end)
+local native_env = {
+	sandbox_status = function()
+		return { kind = "native", ok = true }
+	end,
+}
 describe("setup error rows", function()
 	it("reports Flatpak tools, config errors and failed keyring lookup", function()
 		local rows
 		local p = ping_module.new({
 			env = {
-				flatpak = function()
-					return true
+				sandbox_status = function()
+					return { kind = "flatpak", ok = false, message = "flatpak-spawn is missing" }
 				end,
 			},
 			fs = {
@@ -490,8 +546,11 @@ describe("setup error rows", function()
 		assert.is_nil(p.start(model(), "/crier", { files = { config = "{}" }, args = {}, needs_secrets = {} }))
 		rows = p.tick()
 		assert.is_true(#rows >= 6)
+		assert.equal("flatpak", rows[4].target)
+		assert.is_false(rows[4].ok)
 		p = ping_module.new({
-			env = {},
+			env = native_env,
+			find_binary = function() end,
 			fs = {
 				write = function()
 					return true
@@ -501,6 +560,9 @@ describe("setup error rows", function()
 			secrets = {
 				resolve = function(_, _, cb)
 					cb(nil, err("locked"))
+				end,
+				backend_status = function()
+					return { state = "ready", label = "macOS Keychain" }
 				end,
 			},
 			spawner = {
@@ -513,11 +575,70 @@ describe("setup error rows", function()
 		rows = p.tick()
 		assert.is_false(rows[2].ok)
 	end)
+	it("turns crier platforms problems other than credentials into warning rows", function()
+		local rows
+		local outputs = {
+			platforms = '[{"name":"telegram","enabled":true,"ready":false,"problem":"publish.telegram: publish.telegram.token is required"},'
+				.. '{"name":"discord","enabled":true,"ready":false,"problem":"publish.discord: publish.discord.channel-id is required"},'
+				.. '{"name":"vk","enabled":false,"ready":false,"problem":"publish.vk: publish.vk.owner-id is required"},'
+				.. '{"name":"x","enabled":true,"ready":true}]',
+			ping = '{"results":[{"target":"telegram","ok":true,"account":"@bot","ms":5}]}',
+		}
+		local spawned = {}
+		local p = ping_module.new({
+			env = native_env,
+			find_binary = function() end,
+			fs = {
+				write = function()
+					return true
+				end,
+			},
+			log = log,
+			runs = {
+				finish = function()
+					return true
+				end,
+			},
+			secrets = {
+				resolve = function(_, _, cb)
+					cb({ ["publish.telegram.token"] = "TOKEN" })
+				end,
+				backend_status = function()
+					return { state = "ready", label = "macOS Keychain" }
+				end,
+			},
+			spawner = {
+				spawn = function(plan)
+					spawned[#spawned + 1] = plan
+					return finished(0, outputs[plan.args[1]])
+				end,
+			},
+		})
+		assert(p.start(model(), "/crier", { files = {}, args = { "--config", "/run/config.json" }, needs_secrets = {}, run = {} }))
+		rows = p.tick()
+		assert.same({ "platforms", "--json", "--config", "/run/config.json" }, spawned[1].args)
+		assert.is_nil(spawned[1].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+		assert.same({ "ping", "--json", "--config", "/run/config.json" }, spawned[2].args)
+		assert.equal("TOKEN", spawned[2].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+		local by_target = {}
+		for _, row in ipairs(rows) do
+			by_target[row.target] = by_target[row.target] or {}
+			table.insert(by_target[row.target], row)
+		end
+		assert.equal("macOS Keychain", by_target.keyring[1].message)
+		assert.equal(1, #by_target.discord)
+		assert.is_true(by_target.discord[1].warning)
+		assert.equal("publish.discord: publish.discord.channel-id is required", by_target.discord[1].message)
+		assert.is_nil(by_target.vk)
+		assert.equal(1, #by_target.telegram)
+		assert.is_true(by_target.telegram[1].ok)
+	end)
 	it("ignores a stale lookup callback after detachment", function()
 		local callback
 		local terminated = false
 		local p = ping_module.new({
-			env = {},
+			env = native_env,
+			find_binary = function() end,
 			fs = {
 				write = function()
 					return true
@@ -532,10 +653,9 @@ describe("setup error rows", function()
 			spawner = {
 				spawn = function()
 					return {
-						terminate = function()
+						cancel = function()
 							terminated = true
 						end,
-						detach = function() end,
 						poll = function() end,
 					}
 				end,

@@ -254,11 +254,24 @@ describe("base configuration destination checks", function()
 		}
 		local p = ping_module.new({
 			fs = fs,
-			env = {},
+			env = {
+				sandbox_status = function()
+					return { kind = "native", ok = true }
+				end,
+			},
+			find_binary = function() end,
+			runs = {
+				finish = function()
+					return true
+				end,
+			},
 			log = log,
 			secrets = {
 				resolve = function(_, _, cb)
 					cb({})
+				end,
+				backend_status = function()
+					return { state = "ready", label = "test store" }
 				end,
 			},
 			spawner = {

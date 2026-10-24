@@ -286,7 +286,12 @@ describe("runtime journal review", function()
 			end,
 		}
 		local ping = ping_module.new({
-			env = {},
+			env = {
+				sandbox_status = function()
+					return { kind = "native", ok = true }
+				end,
+			},
+			find_binary = function() end,
 			fs = {
 				write = function()
 					return true
@@ -296,6 +301,9 @@ describe("runtime journal review", function()
 			secrets = {
 				resolve = function(_, _, cb)
 					cb({})
+				end,
+				backend_status = function()
+					return { state = "ready", label = "test store" }
 				end,
 			},
 			spawner = {
@@ -315,7 +323,9 @@ describe("runtime journal review", function()
 	end)
 	it("kills a detached process if reopening for failed-journal cleanup is unavailable", function()
 		local job, state, deps = fixture(2)
-		deps.spawner.adopt = nil
+		deps.spawner.adopt = function()
+			return nil, { kind = "process", message = "cannot reopen" }
+		end
 		job.start()
 		assert.is_nil(job.detach())
 		local _, cancelled = state()

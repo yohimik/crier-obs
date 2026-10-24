@@ -95,6 +95,7 @@ describe("remaining pure runtime boundaries", function()
 				info = function(s)
 					logs[#logs + 1] = s
 				end,
+				debug = function() end,
 			},
 			enqueue = function(event)
 				emitted[#emitted + 1] = event
@@ -108,7 +109,8 @@ describe("remaining pure runtime boundaries", function()
 		assert.equal("end", emitted[1])
 		scheduler.event(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
 		assert.is_true(scheduler.closing())
-		assert.equal("quit post skipped", logs[1])
+		assert.equal("Loaded while live; no start post for this stream", logs[1])
+		assert.equal("quit post skipped", logs[#logs])
 		scheduler.event(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED)
 		scheduler.tick()
 		assert.equal(1, #emitted)
@@ -128,7 +130,7 @@ describe("remaining pure runtime boundaries", function()
 		assert.is_nil(builder.build({ model = m, run = run }))
 		local merged = plans.with_secrets({ env = { PATH = "/safe" } }, {}, log)
 		assert.equal("/safe", merged.env.PATH)
-		local parsed = report.new({ log = log }).parse({ code = 0, stdout = "{}", stderr = "" })
+		local parsed = report.parse({ code = 0, stdout = "{}", stderr = "" }, log)
 		assert.is_true(parsed.ok)
 		assert.equal("crier exceeded the run timeout", report.parse({ code = 1, timed_out = true }).message)
 	end)
@@ -179,8 +181,9 @@ describe("remaining pure runtime boundaries", function()
 						poll = function()
 							return { code = 1, timed_out = true, stdout = "", stderr = "" }
 						end,
-						kill = function()
+						cancel = function()
 							kills = kills + 1
+							return true
 						end,
 					}
 				end,

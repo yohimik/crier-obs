@@ -1,9 +1,13 @@
 local json = require("crier_obs.json")
 local plans = require("crier_obs.invoke.plan")
-local M = {}
 local base = require("crier_obs.invoke.base")
+local M = {}
+-- Check setup: the crier binary, the credential store, staging, optional tools, then `crier platforms
+-- --json` (plain environment: what each ticked platform is missing besides its credentials) and
+-- `crier ping --json` (credentials in the environment). rows() is what the dialog shows.
 function M.new(deps)
 	local self = {}
+	local log = deps.log
 	local jobs = {}
 	local rows = {}
 	local pending = false
@@ -11,8 +15,40 @@ function M.new(deps)
 	local check_run
 	local complete = false
 	local cleanup_records = {}
+	local secret_keys = {}
+	for _, d in ipairs(require("crier_obs.registry.keys")) do
+		if d.secret then
+			secret_keys[#secret_keys + 1] = d.key
+		end
+	end
 	local function scrub(s)
-		return deps.log.scrub(s or "")
+		return log.scrub(s or "")
+	end
+	-- platforms runs without credentials, so a problem naming a credential key is expected there;
+	-- ping reports on the credentials themselves.
+	local function about_credentials(problem)
+		for _, key in ipairs(secret_keys) do
+			if problem:find(key, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+	local function add(executable, args, values, kind)
+		local p, e = deps.spawner.spawn(plans.with_secrets({
+			executable = executable,
+			args = args,
+			env = {},
+			capture_stdout = true,
+			capture_stderr = true,
+			timeout = 60,
+			kind = kind,
+		}, values, log))
+		if p then
+			jobs[#jobs + 1] = { process = p, kind = kind }
+		else
+			rows[#rows + 1] = { target = kind, ok = false, error = scrub(e.message) }
+		end
 	end
 	function self.start(model, executable, plan)
 		if pending or #jobs > 0 then
@@ -20,7 +56,6 @@ function M.new(deps)
 		end
 		generation = generation + 1
 		local request = generation
-		local verified_base
 		pending = true
 		complete = false
 		cleanup_records = {}
@@ -36,20 +71,10 @@ function M.new(deps)
 			},
 		}
 		jobs = {}
-		if deps.env.sandbox_status then
-			local sandbox = deps.env.sandbox_status(deps.fs)
-			if sandbox.kind ~= "native" then
-				rows[#rows + 1] =
-					{ target = sandbox.kind, ok = sandbox.ok, warning = sandbox.ok, message = scrub(sandbox.message) }
-			end
-		elseif deps.env.flatpak and deps.env.flatpak() then
-			rows[#rows + 1] = {
-				target = "Flatpak",
-				warning = true,
-				message = "Check host access to crier, secret-tool and rendering tools",
-			}
+		local sandbox = deps.env.sandbox_status(deps.fs)
+		if sandbox.kind ~= "native" then
+			rows[#rows + 1] = { target = sandbox.kind, ok = sandbox.ok, warning = sandbox.ok, message = scrub(sandbox.message) }
 		end
-
 		for _, item in ipairs({
 			{
 				enabled = model.values["render.video.enabled"],
@@ -69,28 +94,11 @@ function M.new(deps)
 				if not binary or binary == "" then
 					binary = item.default
 				end
-				local found = deps.find_binary and deps.find_binary(binary)
+				local found = deps.find_binary(binary)
 				rows[#rows + 1] =
 					{ target = item.target, ok = found ~= nil, message = found or ("Cannot find " .. tostring(binary)) }
 			end
 		end
-		local function add(args, values, kind)
-			local p, e = deps.spawner.spawn(plans.with_secrets({
-				executable = executable,
-				args = args,
-				env = {},
-				capture_stdout = true,
-				capture_stderr = true,
-				timeout = 60,
-				kind = kind,
-			}, values, deps.log))
-			if p then
-				jobs[#jobs + 1] = { process = p, kind = kind }
-			else
-				rows[#rows + 1] = { target = kind, ok = false, error = scrub(e.message) }
-			end
-		end
-		add({ "platforms", "--json" }, {}, "platforms")
 		-- Config and explicit enables match the snapshot checked by this request.
 		for path, data in pairs(plan.files or {}) do
 			local ok, e = deps.fs.write(path, data)
@@ -100,22 +108,26 @@ function M.new(deps)
 				return nil, e
 			end
 		end
+		local verified_base
 		local function probe_credentials()
-			local pingargs = { "ping", "--json" }
-			for _, arg in ipairs(plan.args) do
-				pingargs[#pingargs + 1] = arg
+			local function with(command)
+				local out = { command, "--json" }
+				for _, arg in ipairs(plan.args) do
+					out[#out + 1] = arg
+				end
+				return out
 			end
+			add(executable, with("platforms"), {}, "platforms")
 			deps.secrets.resolve(model.credential_set, plan.needs_secrets, function(values, e)
 				if request ~= generation then
 					return
 				end
-				local backend = deps.secrets.backend_status and deps.secrets.backend_status()
-					or { state = "ready", message = deps.backend_name or "OS credential store" }
+				local backend = deps.secrets.backend_status()
 				rows[2] = {
 					target = "keyring",
 					ok = not e and backend.state == "ready",
 					warning = backend.state == "checking",
-					message = backend.message or backend.name,
+					message = backend.label,
 					error = e and scrub(e.message),
 				}
 				if e then
@@ -128,125 +140,125 @@ function M.new(deps)
 								target = "config",
 								ok = false,
 								error = scrub(
-									read_error and read_error.message
-										or "Base configuration changed during setup checks"
+									read_error and read_error.message or "Base configuration changed while it was being checked"
 								),
 							}
 							pending = false
 							return
 						end
 					end
-					add(pingargs, values or {}, "ping")
+					add(executable, with("ping"), values or {}, "ping")
 				end
 				pending = false
 			end)
 		end
 		if plan.base_config then
-			local fingerprint, e = base.fingerprint(deps.fs, plan.base_config)
-			if not fingerprint then
+			local inspection, e = base.inspect(deps.spawner, deps.fs, plan)
+			if not inspection then
 				rows[#rows + 1] = { target = "config", ok = false, error = scrub(e.message) }
 				pending = false
-				return nil, e
+				return true
 			end
-			verified_base = fingerprint
-			local process, spawn_error = deps.spawner.spawn(plans.base_probe(plan))
-			if not process then
-				rows[#rows + 1] = { target = "config", ok = false, error = scrub(spawn_error.message) }
-				pending = false
-			else
-				jobs[#jobs + 1] = {
-					process = process,
-					kind = "base_config",
-					plan = plan,
-					after = probe_credentials,
-					fingerprint = verified_base,
-				}
-			end
+			verified_base = inspection.fingerprint
+			jobs[#jobs + 1] = { inspection = inspection, process = inspection.process, kind = "base_config", plan = plan,
+				after = probe_credentials }
 		else
 			probe_credentials()
 		end
 		return true
 	end
 	local function cancel(process)
-		local record
-		if process.cancel then
-			record = process.cancel()
-		else
-			process.terminate()
-			record = process.detach()
-		end
-		if type(record) == "table" and record.pid and record.code == nil and check_run and deps.runs then
+		local record = process.cancel()
+		if type(record) == "table" and record.pid and record.code == nil and check_run then
 			cleanup_records[#cleanup_records + 1] = record
 			local ok, e = deps.runs.journal(check_run, { state = "failed", drainers = cleanup_records })
 			if not ok and e then
-				deps.log.warn("Cannot save setup cleanup: " .. scrub(e.message))
+				log.warn("Cannot save setup cleanup: " .. scrub(e.message))
 			end
 		end
+	end
+	local function platform_rows(data)
+		for _, row in ipairs(type(data) == "table" and data or {}) do
+			local problem = type(row) == "table" and type(row.problem) == "string" and row.problem or ""
+			if row.enabled == true and problem ~= "" and not about_credentials(problem) then
+				rows[#rows + 1] = { target = scrub(row.name), warning = true, message = scrub(problem) }
+			end
+		end
+	end
+	local function ping_rows(data, r)
+		local results = type(data) == "table" and type(data.results) == "table" and data.results or {}
+		for _, row in ipairs(results) do
+			local rendered = {
+				target = scrub(row.target),
+				ok = row.ok,
+				account = scrub(row.account),
+				message = scrub(row.note),
+				error = scrub(row.error),
+				ms = row.ms,
+			}
+			if row.target == "stage" or (type(row.target) == "string" and row.target:match("^stage:")) then
+				rows[3] = rendered
+			else
+				rows[#rows + 1] = rendered
+			end
+		end
+		if r.code ~= 0 and #results == 0 then
+			rows[#rows + 1] =
+				{ target = "ping", ok = false, error = scrub(r.stderr), message = "Check failed with code " .. r.code }
+		end
+	end
+	local function base_done(job)
+		local stdout, e = job.inspection.poll()
+		if stdout == nil then
+			return false
+		end
+		if stdout == false then
+			cancel(job.process)
+			rows[#rows + 1] = { target = "config", ok = false, error = scrub(e.message) }
+			pending = false
+			return true
+		end
+		local names, parse_error = plans.disable_base_custom(job.plan, stdout)
+		if not names then
+			rows[#rows + 1] = { target = "config", ok = false, error = scrub(parse_error.message) }
+			pending = false
+		else
+			job.after()
+		end
+		return true
+	end
+	local function summarise()
+		local ok, failed, warnings = 0, 0, 0
+		for _, row in ipairs(rows) do
+			if row.ok == false then
+				failed = failed + 1
+			elseif row.warning then
+				warnings = warnings + 1
+			elseif row.ok then
+				ok = ok + 1
+			end
+		end
+		log.info("Check setup finished: " .. ok .. " ok, " .. warnings .. " warnings, " .. failed .. " failed")
+		return failed
 	end
 	function self.tick()
 		for i = #jobs, 1, -1 do
 			local job = jobs[i]
-			local r, e = job.process.poll()
-			if r or e then
-				table.remove(jobs, i)
-				if e then
-					cancel(job.process)
-					if job.kind == "base_config" then
-						pending = false
-					end
-					rows[#rows + 1] = {
-						target = job.kind == "base_config" and "config" or job.kind,
-						ok = false,
-						error = scrub(e.message),
-					}
-				elseif job.kind == "base_config" then
-					if r.code ~= 0 or r.timed_out then
-						rows[#rows + 1] =
-							{ target = "config", ok = false, error = "Cannot inspect the base configuration" }
-						pending = false
+			if job.kind == "base_config" then
+				if base_done(job) then
+					table.remove(jobs, i)
+				end
+			else
+				local r, e = job.process.poll()
+				if r or e then
+					table.remove(jobs, i)
+					if e then
+						cancel(job.process)
+						rows[#rows + 1] = { target = job.kind, ok = false, error = scrub(e.message) }
+					elseif job.kind == "platforms" then
+						platform_rows(json.decode(r.stdout or ""))
 					else
-						local current, read_error = base.fingerprint(deps.fs, job.plan.base_config)
-						local names, parse_error
-						if current ~= job.fingerprint then
-							parse_error = read_error
-								or { kind = "configuration", message = "Base configuration changed during setup checks" }
-						else
-							names, parse_error = plans.disable_base_custom(job.plan, r.stdout)
-						end
-						if not names then
-							rows[#rows + 1] = { target = "config", ok = false, error = scrub(parse_error.message) }
-							pending = false
-						else
-							job.after()
-						end
-					end
-				else
-					local data = json.decode(r.stdout or "")
-					local results = job.kind == "ping" and type(data) == "table" and (data.results or data) or {}
-					local count = 0
-					for _, row in ipairs(results) do
-						count = count + 1
-						local rendered = {
-							target = scrub(row.target),
-							ok = row.ok,
-							account = scrub(row.account),
-							message = scrub(row.note),
-							error = scrub(row.error),
-							ms = row.ms,
-						}
-						if row.target == "stage" or (type(row.target) == "string" and row.target:match("^stage:")) then
-							rows[3] = rendered
-						else
-							rows[#rows + 1] = rendered
-						end
-					end
-					if r.code ~= 0 and count == 0 then
-						rows[#rows + 1] = {
-							target = job.kind,
-							ok = false,
-							error = scrub(r.stderr),
-							message = "Check failed with code " .. r.code,
-						}
+						ping_rows(json.decode(r.stdout or ""), r)
 					end
 				end
 			end
@@ -256,20 +268,13 @@ function M.new(deps)
 				rows[3] = { target = "stage", ok = true, message = "This staging mode has no credentials to check" }
 			end
 			complete = true
-			if deps.runs then
-				local failed = false
-				for _, row in ipairs(rows) do
-					if row.ok == false then
-						failed = true
-					end
-				end
-				local ok, e = deps.runs.finish(
-					check_run,
-					{ code = failed and 1 or 0, stdout = "", stderr = "", drainers = cleanup_records }
-				)
-				if not ok and e then
-					deps.log.warn("Cannot save setup report: " .. scrub(e.message))
-				end
+			local failed = summarise()
+			local ok, e = deps.runs.finish(
+				check_run,
+				{ code = failed > 0 and 1 or 0, stdout = "", stderr = "", drainers = cleanup_records }
+			)
+			if not ok and e then
+				log.warn("Cannot save setup report: " .. scrub(e.message))
 			end
 		end
 		return rows

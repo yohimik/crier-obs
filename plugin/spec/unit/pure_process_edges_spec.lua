@@ -35,7 +35,7 @@ end)
 local function instance(options)
   options = options or {}
   local result = options.result or {code = 0, stdout = '{"version":"1.1.1"}'}
-  local process = options.process or {poll = function() return result end, detach = function() end}
+  local process = options.process or {poll = function() return result end, cancel = function() return true end}
   return resolver.new{fs = options.fs or {exists = function(path) return path == '/crier' end},
     env = options.env or {os = 'Linux'}, state_dir = options.state_dir, pin = '1.1.1', json = json,
     spawner = options.spawner or {spawn = function(plan)
@@ -64,16 +64,24 @@ describe('semantic version comparison without numeric precision loss', function(
   end)
 end)
 describe('resolver discovery and failure cleanup', function()
-  it('checks configured, managed, PATH and known directories in order on both OS families', function()
+  it('checks configured, managed and augmented PATH directories in order on both OS families', function()
     local available = {['/managed/bin/crier'] = true, ['/path/crier'] = true, ['/usr/local/bin/crier'] = true}
-    local r = instance{state_dir = '/managed', fs = {exists = function(path) return available[path] end},
-      env = {os = 'Linux', augmented_path = function() return '/path' end, getenv = function() return '/home/user' end}}
+    -- The env port's augmented PATH carries the Homebrew, /usr/local and ~/.local directories.
+    local env = require('crier_obs.ports.env').new{platform = 'Linux', getenv = function(name)
+      return ({PATH = '/path', HOME = '/home/user'})[name]
+    end}
+    local r = instance{state_dir = '/managed', fs = {exists = function(path) return available[path] end}, env = env}
     assert.equal('/managed/bin/crier', r.find()); available['/managed/bin/crier'] = nil
     assert.equal('/path/crier', r.find()); available['/path/crier'] = nil
     assert.equal('/usr/local/bin/crier', r.find()); assert.is_nil(r.find('/nonexistent'))
-    r = instance{fs = {exists = function(path) return path == 'D:\\tools\\crier.exe' end},
+    available['/home/user/.local/bin/ffmpeg'] = true
+    assert.equal('/home/user/.local/bin/ffmpeg', r.find_binary('ffmpeg'))
+    assert.is_nil(r.find_binary('')); assert.is_nil(r.find_binary('/missing/zrok'))
+    assert.equal('/usr/local/bin/crier', r.find_binary('/usr/local/bin/crier'))
+    r = instance{fs = {exists = function(path) return path == 'D:\\tools\\crier.exe' or path == 'D:\\tools\\zrok.exe' end},
       env = {os = 'Windows', getenv = function() return 'C:\\other;D:\\tools' end}}
     assert.equal('D:\\tools\\crier.exe', r.find())
+    assert.equal('D:\\tools\\zrok.exe', r.find_binary('zrok'))
     r = instance{fs = {exists = function() return false end}}
     assert.is_nil(r.probe()); assert.equal('missing', r.tick().state)
   end)
@@ -89,35 +97,29 @@ describe('resolver discovery and failure cleanup', function()
     assert(r.probe('/crier')); assert.equal('ready', r.tick().state); assert.equal('1.2.0', r.status().version)
     r = instance{result = {code = 0, stdout = 'crier 1.0.0'}}
     assert(r.probe('/crier')); assert.equal('outdated', r.tick().state)
-    r = resolver.new{fs = {exists = function() return true end},
+    r = resolver.new{fs = {exists = function() return true end}, pin = '1.1.1',
       spawner = {spawn = function() return {poll = function() return {code = 0, stdout = 'crier 1.0.0'} end} end}}
     assert(r.probe('/crier')); assert.is_truthy(r.tick().message:find('older than 1.1.1', 1, true))
+    assert.has_error(function() resolver.new{fs = {}} end)
   end)
   it('cancels an outstanding utility version probe during unload', function()
-    for _, method in ipairs({'cancel', 'close', 'kill', 'terminate'}) do
-      local stopped = false
-      local process = {poll = function() return nil end, detach = function() end}
-      process[method] = function() stopped = true end
-      local r = instance{process = process}; assert(r.probe('/crier')); r.detach()
-      assert.is_true(stopped); assert.equal('cancelled', r.status().state)
-      r.detach(); assert(r.probe('/crier')); r.detach()
-    end
+    local stopped = 0
+    local process = {poll = function() return nil end, cancel = function() stopped = stopped + 1; return true end}
+    local r = instance{process = process}; assert(r.probe('/crier')); r.detach()
+    assert.equal(1, stopped); assert.equal('cancelled', r.status().state)
+    r.detach(); assert.equal(1, stopped); assert(r.probe('/crier')); r.detach(); assert.equal(2, stopped)
   end)
   it('cleans poll errors and allows a subsequent probe instead of staying busy', function()
-    for _, method in ipairs({'cancel', 'close', 'kill', 'terminate'}) do
-      local cleaned, detached = false, false
-      local process = {poll = function() return nil, {kind = 'process', message = 'poll failed'} end,
-        detach = function() detached = true end}
-      process[method] = function() cleaned = true end
-      local r = instance{process = process}
-      assert(r.probe('/crier')); assert.is_nil(r.probe('/crier'))
-      local status, err = r.tick(); assert.equal('failed', status.state); assert.equal('poll failed', err.message)
-      assert.is_true(cleaned); if method == 'kill' or method == 'terminate' then assert.is_true(detached) end
-      assert(r.probe('/crier')); r.detach()
-      if method == 'kill' or method == 'terminate' then assert.is_true(detached) end
-      r.detach(); assert.equal('cancelled', r.tick().state)
-    end
-    local pending = {poll = function() return nil end, detach = function() end}
-    local r = instance{process = pending}; assert(r.probe('/crier')); assert.equal('checking', r.tick().state); r.detach()
+    local cleaned = 0
+    local process = {poll = function() return nil, {kind = 'process', message = 'poll failed'} end,
+      cancel = function() cleaned = cleaned + 1; return true end}
+    local r = instance{process = process}
+    assert(r.probe('/crier')); assert.is_nil(r.probe('/crier'))
+    local status, err = r.tick(); assert.equal('failed', status.state); assert.equal('poll failed', err.message)
+    assert.equal(1, cleaned)
+    assert(r.probe('/crier')); r.detach(); assert.equal(2, cleaned)
+    r.detach(); assert.equal('cancelled', r.tick().state)
+    local pending = {poll = function() return nil end, cancel = function() return true end}
+    r = instance{process = pending}; assert(r.probe('/crier')); assert.equal('checking', r.tick().state); r.detach()
   end)
 end)

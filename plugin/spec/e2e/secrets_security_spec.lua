@@ -6,7 +6,8 @@ local fs_module = require('crier_obs.ports.fs')
 local log_module = require('crier_obs.log')
 local store_module = require('crier_obs.settings.store')
 local function copy(t) local out = {}; for k, v in pairs(t or {}) do out[k] = v end; return out end
-local function setup(bound_missing)
+local function setup(bound_missing, options)
+  options = options or {}
   obs.reset()
   local path = os.tmpname(); os.remove(path)
   local fs = fs_module.new{obs = obs}
@@ -22,33 +23,41 @@ local function setup(bound_missing)
     local value = backend.values[account]; cb(value, not value and {kind = 'missing'} or nil)
   end
   function backend.forget(account, cb) backend.values[account] = nil; cb(true) end
+  function backend.exists(account, cb) backend.exists_calls = (backend.exists_calls or 0) + 1
+    cb(backend.values[account] and true or nil, not backend.values[account] and {kind = 'missing'} or nil) end
+  function backend.tick() end
   function backend.close() backend.closed = true end
   local secrets = service_module.new{fs = fs, state_dir = path, store = store, log = log, backend = backend}
   local plans, processes = {}, {}
   local spawner = {}
   function spawner.spawn(plan)
-    plans[#plans + 1] = {args = copy(plan.args), env = copy(plan.env), kind = plan.kind}
+    plans[#plans + 1] = {args = copy(plan.args), env = copy(plan.env), kind = plan.kind, run = plan.run}
     local output, code, stderr = {results = {{platform = 'telegram', ok = true}}}, 0, ''
-    if plan.kind == 'publish' then
+    if plan.kind == 'probe' and plan.args[1] == 'config' then output = {values = {}}
+    elseif options.publish_ok and plan.kind == 'publish' then output = {results = {{platform = 'telegram', ok = true}}}
+    elseif plan.kind == 'publish' then
       local secret = plan.env and plan.env.CRIER_PUBLISH_TELEGRAM_TOKEN or ''
       output = {results = {{platform = 'telegram', ok = false, error = 'rejected ' .. secret}}}
       stderr, code = 'transport failed ' .. secret, 5
     elseif plan.kind == 'ping' then
       local secret = plan.env and plan.env.CRIER_PUBLISH_TELEGRAM_TOKEN or ''
       output = {results = {{target = 'telegram', ok = false, error = 'rejected ' .. secret}}}; code = 5
-    elseif plan.kind == 'platforms' then output = {platforms = {'telegram'}} end
+    elseif plan.kind == 'platforms' then output = {{name = 'telegram', enabled = true, ready = true}} end
     local p = {pid = 400 + #plans, child_pid = 400 + #plans}
     function p.poll() return {code = code, stdout = json.encode(output), stderr = stderr} end
     function p.detach() return {pid = p.pid, child_pid = p.pid} end
-    function p.terminate() end
-    function p.kill() end
+    function p.cancel() return true end
     processes[#processes + 1] = p
     return p
   end
   function spawner.adopt() return nil, {message = 'No process to adopt'} end
+  function spawner.reap() return {} end
+  function spawner.current_pid() return options.pid or 9000 end
+  function spawner.alive() return false end
   local resolver = {find = function() return '/fake/crier' end, probe = function() return true end,
     status = function() return {state = 'ready', message = 'crier installed'} end,
-    tick = function() end, detach = function() end}
+    tick = function() return {state = 'ready', message = 'crier installed'} end, detach = function() end,
+    find_binary = function() end}
   local p = plugin_module.new{obs = obs, fs = fs, state_dir = path, log = log, store = store,
     secrets = secrets, spawner = spawner, resolver = resolver}
   local settings = obs.obs_data_create(); p.defaults(settings)
@@ -137,5 +146,142 @@ describe('credential UI and publishing security', function()
     end
     assert.is_true(found)
     obs.obs_data_release(settings); obs.assert_no_leaks()
+  end)
+end)
+
+local function count(plans, kind, event)
+  local n = 0
+  for _, plan in ipairs(plans) do
+    if plan.kind == kind and (not event or (plan.run and plan.run.event == event)) then n = n + 1 end
+  end
+  return n
+end
+local function logged(text)
+  local found = {}
+  for _, line in ipairs(obs.logs) do if line.text:find(text, 1, true) then found[#found + 1] = line.text end end
+  return found
+end
+local function live(options)
+  local p, settings, backend, plans, path, fs = setup(false, options)
+  backend.values['default/publish.telegram.token'] = 'LIVE_SECRET'
+  obs.obs_data_set_bool(settings, 'cobs.trigger.quit.enabled', true); p.update(settings)
+  obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED); pump(p)
+  assert.is_true(p.scheduler.stream.cache_ready)
+  return p, settings, backend, plans, path, fs
+end
+local function release(settings) obs.obs_data_release(settings); obs.assert_no_leaks(); assert.equal(0, obs.timer_count()) end
+describe('quit post across every way OBS ends', function()
+  it('posts once from SCRIPTING_SHUTDOWN, then neither the cleanup nor the unload posts again', function()
+    local p, settings, _, plans = live()
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP)
+    p.unload()
+    assert.equal(1, count(plans, 'publish', 'quit'))
+    assert.equal('LIVE_SECRET', plans[#plans].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+    assert.equal(1, #logged('quit post spawned'))
+    assert.equal(0, #logged('quit post skipped'))
+    release(settings)
+  end)
+  it('posts once from the unload when OBS ends without SCRIPTING_SHUTDOWN (macOS application quit)', function()
+    local p, settings, _, plans = live()
+    p.unload()
+    assert.equal(1, count(plans, 'publish', 'quit'))
+    assert.equal('LIVE_SECRET', plans[#plans].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+    assert.equal(1, #logged('quit post spawned'))
+    release(settings)
+  end)
+  it('does not treat a scene-collection switch as a quit', function()
+    for _, event in ipairs({obs.OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING, obs.OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP}) do
+      local p, settings, _, plans = live()
+      obs.emit(event); p.unload()
+      assert.equal(0, count(plans, 'publish', 'quit'))
+      assert.equal(0, #logged('quit post'))
+      release(settings)
+    end
+  end)
+  it('logs the skip once when OBS ends while offline or with the quit trigger off', function()
+    local p, settings, _, plans = setup()
+    p.unload()
+    assert.equal(0, count(plans, 'publish', 'quit')); assert.equal(1, #logged('quit post skipped'))
+    release(settings)
+    p, settings, _, plans = live()
+    obs.obs_data_set_bool(settings, 'cobs.trigger.quit.enabled', false); p.update(settings)
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN); p.unload()
+    assert.equal(0, count(plans, 'publish', 'quit')); assert.equal(1, #logged('quit post skipped'))
+    release(settings)
+  end)
+  it('keeps the quit post after Save with an empty field or a save that fails', function()
+    for _, failing in ipairs({false, true}) do
+      local p, settings, backend, plans = live()
+      if failing then
+        obs.obs_data_set_string(settings, 'publish.telegram.token', 'WRONG_SECRET'); p.update(settings)
+        backend.lookup_original = backend.lookup
+        local lookups = 0
+        backend.lookup = function(account, cb)
+          lookups = lookups + 1
+          if lookups == 1 then cb('mismatch') else backend.lookup_original(account, cb) end
+        end
+      end
+      p.callbacks.save_secret('publish.telegram.token'); pump(p, 40)
+      if not failing then assert.equal(1, #logged('Enter a credential before saving')) end
+      assert.is_true(p.scheduler.stream.cache_ready)
+      obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
+      assert.equal(1, count(plans, 'publish', 'quit'))
+      assert.equal('LIVE_SECRET', plans[#plans].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+      assert.equal(0, #logged('credentials are not ready'))
+      p.unload(); release(settings)
+    end
+  end)
+  it('posts the quit post in advanced mode even when no earlier post probed the base file', function()
+    local p, settings, backend, plans, path, fs = setup(false, {publish_ok = true})
+    backend.values['default/publish.telegram.token'] = 'LIVE_SECRET'
+    assert(fs.write(path .. '/base.json', '{}'))
+    obs.obs_data_set_string(settings, 'cobs.base_config', path .. '/base.json')
+    obs.obs_data_set_bool(settings, 'cobs.trigger.start.enabled', false)
+    obs.obs_data_set_bool(settings, 'cobs.trigger.quit.enabled', true); p.update(settings)
+    obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED); pump(p)
+    assert.is_true(p.scheduler.stream.base_config_ready)
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
+    assert.equal(1, count(plans, 'publish', 'quit'))
+    assert.equal(0, #logged('base configuration is not ready'))
+    p.unload(); release(settings)
+  end)
+  it('never publishes posts still queued at quit when OBS starts again', function()
+    local p, settings, backend, plans = setup()
+    backend.values['default/publish.telegram.token'] = 'LIVE_SECRET'
+    local lookup = backend.lookup
+    backend.lookup = function() end -- the start post waits on the keyring when OBS quits
+    obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED); pump(p, 3)
+    assert.equal('resolving_secrets', p.queue.active().state)
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN); p.unload()
+    assert.equal(1, #logged('Post skipped: OBS quit before it started'))
+    obs.streaming = false
+    backend.lookup = lookup
+    p.load(settings); p.update(settings); pump(p, 20)
+    assert.equal(0, count(plans, 'publish'))
+    p.unload(); release(settings)
+  end)
+  it('drops the live credentials when the stream ends without an end post, and status rows keep none', function()
+    local p, settings, backend = live()
+    obs.obs_data_set_bool(settings, 'cobs.trigger.end.enabled', false); p.update(settings); pump(p)
+    obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STOPPED); pump(p)
+    assert.is_nil(next(p.scheduler.stream.cache)); assert.is_nil(next(p.secrets.cache))
+    p.properties(); pump(p, 40)
+    assert.is_true((backend.exists_calls or 0) > 0)
+    assert.is_nil(next(p.secrets.cache))
+    assert.equal('stored', p.secrets.status('default', 'publish.telegram.token').state)
+    p.unload(); release(settings)
+  end)
+  it('drops the live credentials once the end post has them', function()
+    local p, settings, _, plans = live()
+    obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STOPPED); pump(p)
+    assert.equal(1, count(plans, 'publish', 'end'))
+    assert.equal('LIVE_SECRET', plans[#plans].env.CRIER_PUBLISH_TELEGRAM_TOKEN)
+    assert.is_nil(next(p.scheduler.stream.cache)); assert.is_nil(next(p.secrets.cache))
+    -- A later offline post carries no uptime from the stream that ended.
+    p.callbacks.post(); pump(p)
+    assert.equal(0, p.scheduler.stream.snapshot().uptime)
+    assert.is_nil(p.scheduler.stream.snapshot().started_at)
+    p.unload(); release(settings)
   end)
 end)

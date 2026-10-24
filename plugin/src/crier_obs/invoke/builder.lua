@@ -3,6 +3,7 @@ local descriptors = require("crier_obs.schema.descriptor")
 local equal = require("crier_obs.settings.model").equal
 local plan_module = require("crier_obs.invoke.plan")
 local copy = require("crier_obs.invoke.datadoc").copy
+local platform_kinds = require("crier_obs.schema.platforms")
 local M = {}
 local function set(t, key, value)
 	local parts = {}
@@ -32,11 +33,72 @@ local function absolute(path, base)
 	end
 	return base .. "/" .. path
 end
+-- The credential keys a post needs: those of the ticked platforms, plus the staging keys when S3
+-- staging is selected (or, in advanced mode, may be selected by the untouched base file).
+function M.needs_secrets(model, platforms)
+	platforms = platforms or model.platforms
+	local keys = {}
+	for _, d in ipairs(descriptors.build(model.custom_names)) do
+		if d.secret then
+			local inherited_stage = model.mode == "advanced" and not model.touched["stage.mode"]
+			local stage_selected = not d.key:match("^stage%.s3%.")
+				or model.values["stage.mode"] == "s3"
+				or inherited_stage
+			if (d.platform and platforms[d.platform]) or (not d.platform and stage_selected) then
+				keys[#keys + 1] = d.key
+			end
+		end
+	end
+	return keys
+end
+-- Path-valued crier keys ({key = kind}), so the Flatpak bridge can check every path the child sees.
+function M.path_keys(custom_names)
+	local keys = {}
+	for _, d in ipairs(descriptors.build(custom_names)) do
+		if d.path then
+			keys[d.key] = d.kind
+		end
+	end
+	return keys
+end
+-- A saved replay is an MP4 crier publishes as is. crier refuses publish.input next to its own video
+-- rendering, and refuses the whole post when any enabled platform cannot take video, so a clip post
+-- turns rendering off and leaves such platforms out with a warning.
+local function clip_platforms(model, warnings)
+	local platforms, refused, accepted = {}, {}, 0
+	for name, enabled in pairs(model.platforms) do
+		if enabled and not platform_kinds.accepts(name, "video", model.values) then
+			refused[#refused + 1] = name
+			platforms[name] = false
+		else
+			platforms[name] = enabled
+			accepted = accepted + (enabled and 1 or 0)
+		end
+	end
+	table.sort(refused)
+	if accepted == 0 then
+		local message = "Clip post skipped: none of the selected platforms can post video (%s)"
+		return nil, { kind = "skipped", message = message:format(table.concat(refused, ", ")) }
+	end
+	if #refused > 0 then
+		warnings[#warnings + 1] = "Clip post leaves out platforms that cannot post video: " .. table.concat(refused, ", ")
+	end
+	return platforms
+end
 function M.build(input)
 	local model = assert(input.model)
 	local run = assert(input.run)
 	local base = model.mode == "advanced" and directory(model.base_config) or (input.source_dir or run.dir)
-	local flat, warnings, secrets = {}, {}, {}
+	local flat, warnings = {}, {}
+	local clip = input.clip and input.clip ~= "" and input.clip or nil
+	local platforms = model.platforms
+	if clip then
+		local refusal
+		platforms, refusal = clip_platforms(model, warnings)
+		if not platforms then
+			return nil, refusal
+		end
+	end
 	local ds = descriptors.build(model.custom_names)
 	local custom_names, seen_custom = {}, {}
 	for _, d in ipairs(ds) do
@@ -46,16 +108,7 @@ function M.build(input)
 		end
 	end
 	for _, d in ipairs(ds) do
-		if d.secret then
-			local inherited_stage = model.mode == "advanced" and not model.touched["stage.mode"]
-			local stage_selected = not d.key:match("^stage%.s3%.")
-				or model.values["stage.mode"] == "s3"
-				or inherited_stage
-			local enabled_platform = d.platform and model.platforms[d.platform]
-			if enabled_platform or (not d.platform and stage_selected) then
-				secrets[#secrets + 1] = d.key
-			end
-		else
+		if not d.secret then
 			local value = model.values[d.key]
 			if value == nil then
 				value = d.default
@@ -75,7 +128,7 @@ function M.build(input)
 			end
 			local force = d.key:match("^publish%.[^.]+%.enabled$") or d.key:match("^publish%.custom%..+%.enabled$")
 			if force then
-				value = model.platforms[d.platform] or false
+				value = platforms[d.platform] or false
 			end
 			if d.custom and d.key:match("%.env$") then
 				for _, entry in ipairs(value) do
@@ -97,8 +150,10 @@ function M.build(input)
 	end
 	flat["publish.caption"] = input.caption or ""
 	flat["render.data"] = input.data_path or run.data
-	if input.clip and input.clip ~= "" then
-		flat["publish.input"] = absolute(input.clip, base)
+	if clip then
+		flat["publish.input"] = absolute(clip, base)
+		flat["render.video.enabled"] = false
+		flat["render.video.frames-input"] = ""
 	end
 	local args = { "--config", model.mode == "advanced" and model.base_config or run.config, "--json" }
 	if model.mode ~= "advanced" or model.touched["log.level"] then
@@ -110,9 +165,9 @@ function M.build(input)
 		args[#args + 1] = "--render-output"
 		args[#args + 1] = run.preview
 	end
-	if input.clip and input.clip ~= "" then
+	if clip then
 		args[#args + 1] = "--publish-input"
-		args[#args + 1] = absolute(input.clip, base)
+		args[#args + 1] = absolute(clip, base)
 	end
 	local files = {}
 	if model.mode == "advanced" then
@@ -149,11 +204,7 @@ function M.build(input)
 		end
 		files[run.config] = data
 	end
-	local length = #(input.executable or "") + 1
-	for _, arg in ipairs(args) do
-		length = length + #arg + 3
-	end
-	if length > (input.argv_limit or 30000) then
+	if plan_module.argv_length(input.executable, args) > (input.argv_limit or plan_module.ARGV_LIMIT) then
 		return nil,
 			{
 				kind = "arguments",
@@ -173,7 +224,8 @@ function M.build(input)
 		pid_path = run.pid,
 		timeout = model.timeout or 900,
 		kind = input.kind or "publish",
-		needs_secrets = secrets,
+		needs_secrets = M.needs_secrets(model, platforms),
+		path_keys = M.path_keys(model.custom_names),
 		warnings = warnings,
 		run = run,
 		base_config = model.mode == "advanced" and not input.skip_base_probe and model.base_config or nil,

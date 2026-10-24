@@ -10,29 +10,24 @@ function M.new(deps)
     if not process then callback(nil, err); return end
     active[#active + 1] = {process = process, callback = callback}
   end
-  local function cancel(process)
-    if process.cancel then process.cancel()
-    else
-      if process.kill then process.kill() end
-      process.poll()
-      if process.detach then process.detach() end
-    end
-  end
+  -- Polls in place; the list is only rebuilt when a job finishes, so an idle heartbeat allocates nothing.
   function self.tick()
-    if closed then return end
-    local previous = active; active = {}
-    for _, job in ipairs(previous) do
+    if closed or #active == 0 then return end
+    local i = 1
+    while i <= #active do
+      local job = active[i]
       local result, err = job.process.poll()
       if result or err then
-        if err then cancel(job.process) end
+        table.remove(active, i)
+        if err then job.process.cancel() end
         if result and result.timed_out then err = {kind = 'unavailable', message = 'Credential store timed out'} end
         job.callback(result, err)
-      else active[#active + 1] = job end
+      else i = i + 1 end
     end
   end
   function self.close()
     closed = true
-    for _, job in ipairs(active) do cancel(job.process) end
+    for _, job in ipairs(active) do job.process.cancel() end
     active = {}
   end
   return self

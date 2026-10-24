@@ -1,5 +1,9 @@
 local service = require('crier_obs.secrets.service')
-local function new(deps) deps.lock = function(cb) return cb() end; return service.new(deps) end
+local function new(deps)
+  deps.lock = function(cb) return cb() end
+  deps.log = deps.log or require('crier_obs.log').new({})
+  return service.new(deps)
+end
 local json = require('crier_obs.json')
 local cipherfile = require('crier_obs.secrets.keyring.file')
 local function memory_fs()
@@ -14,6 +18,7 @@ local function memory_fs()
     return fs.write_private(path, value)
   end
   function fs.remove(path) files[path] = nil; return true end
+  fs.remove_private = fs.remove
   function fs.random_bytes(n)
     random = random + 1; local bytes = {}
     for i = 1, n do bytes[i] = string.char(math.floor(random / 256 ^ ((i - 1) % 4)) % 256) end
@@ -36,7 +41,12 @@ local function backend(name)
     operations[#operations + 1] = {'forget', account}
     callbacks[#callbacks + 1] = function() values[account] = nil; cb(true) end
   end
+  function b.exists(account, cb)
+    operations[#operations + 1] = {'exists', account}
+    callbacks[#callbacks + 1] = function() cb(values[account] and true or nil, not values[account] and {kind = 'missing'} or nil) end
+  end
   function b.tick() local tasks = callbacks; callbacks = {}; for _, cb in ipairs(tasks) do cb() end end
+  function b.close() end
   return b
 end
 local function drain(s) for _ = 1, 30 do s.tick() end end
@@ -52,13 +62,21 @@ describe('credential service', function()
     assert.equal('store', b.operations[1][1]); assert.equal('lookup', b.operations[2][1]); assert.equal(2, #b.operations)
     assert.equal('stored', s.status('default', 'publish.telegram.token').state)
     assert.equal('test', json.decode(fs.files['/state/secrets/index.json'])['default/publish.telegram.token'])
+    -- Saving keeps no copy: the first resolve reads the store, and only a remembering one caches it.
+    assert.is_nil(s.cache['default/publish.telegram.token'])
     local resolved
-    s.resolve('default', {'publish.telegram.token'}, function(values) resolved = values end)
-    assert.equal('final😀', resolved['publish.telegram.token']); assert.equal(2, #b.operations)
+    s.resolve('default', {'publish.telegram.token'}, function(values) resolved = values end); drain(s)
+    assert.equal('final😀', resolved['publish.telegram.token']); assert.equal(3, #b.operations)
+    assert.is_nil(s.cache['default/publish.telegram.token'])
+    s.resolve('default', {'publish.telegram.token'}, function(values) resolved = values end, {remember = true}); drain(s)
+    assert.equal('final😀', s.cache['default/publish.telegram.token']); assert.equal(4, #b.operations)
+    resolved = nil
+    s.resolve('default', {'publish.telegram.token'}, function(values) resolved = values end); drain(s)
+    assert.equal(4, #b.operations); assert.equal('final😀', resolved['publish.telegram.token'])
     local forgotten = s.forget('default', 'publish.telegram.token'); drain(s)
     assert.equal('done', forgotten.state); assert.is_true(forgotten.value)
     assert.equal('not stored', s.status('default', 'publish.telegram.token').state)
-    assert.is_nil(s.cached('default')['publish.telegram.token']); assert.is_nil(s.pending('default', 'publish.telegram.token'))
+    assert.is_nil(s.cache['default/publish.telegram.token']); assert.is_nil(s.pending('default', 'publish.telegram.token'))
   end)
   it('scrubs scene values into pending without an implicit save, and preserves failure values', function()
     local fs, b = memory_fs(), backend()
@@ -104,7 +122,7 @@ describe('credential service', function()
   it('does not resurrect a cache entry when forgetting an in-flight save', function()
     local s = new{fs = memory_fs(), state_dir = '/state', backend = backend()}
     s.commit('default', 'token', 'secret'); s.tick(); s.forget('default', 'token'); drain(s)
-    assert.is_nil(s.cached('default').token)
+    assert.is_nil(s.cache['default/token'])
   end)
   it('clears stale queued lookups after forget and cancels all callbacks on close', function()
     local b = backend(); local closed = false
@@ -115,7 +133,7 @@ describe('credential service', function()
     local forgotten = s.forget('default', 'token')
     local queued = s.resolve('default', {'token'}); drain(s)
     assert.equal('done', forgotten.state); assert.equal('done', lookup.state); assert.equal('done', queued.state)
-    assert.is_nil(queued.values.token); assert.is_nil(s.cached('default').token)
+    assert.is_nil(queued.values.token); assert.is_nil(s.cache['default/token'])
     local called = false
     s.resolve('default', {'token'}, function() called = true end); s.tick(); s.close(); b.tick(); s.tick()
     assert.is_true(closed); assert.is_false(called); assert.equal('unavailable', s.backend_status().state)
@@ -136,12 +154,87 @@ describe('credential service', function()
     drain(s)
     assert.equal('not stored', s.status('default', 'token1').state)
   end)
+  it('answers status rows from presence checks that never read or keep a value', function()
+    local b = backend(); local s = new{fs = memory_fs(), state_dir = '/state', backend = b}
+    b.values['default/publish.x.token'], b.values['default/publish.vk.token'] = 'SECRETX', 'SECRETVK'
+    s.status('default', 'publish.x.token'); s.status('default', 'publish.vk.token'); s.status('default', 'publish.discord.webhook-url')
+    drain(s)
+    assert.equal('stored', s.status('default', 'publish.x.token').state)
+    assert.equal('stored', s.status('default', 'publish.vk.token').state)
+    assert.equal('not stored', s.status('default', 'publish.discord.webhook-url').state)
+    for _, operation in ipairs(b.operations) do assert.equal('exists', operation[1]) end
+    assert.is_nil(next(s.cache))
+  end)
   it('rejects malformed credential account names and forgets a complete set', function()
     local s = new{fs = memory_fs(), state_dir = '/state', backend = backend()}
     assert.equal('failed', s.commit('bad\nset', 'token', 'secret').state)
     s.commit('one', 'a', 'alpha'); s.commit('one', 'b', 'beta'); s.commit('two', 'a', 'gamma'); drain(s)
+    s.resolve('one', {'a', 'b'}, nil, {remember = true}); s.resolve('two', {'a'}, nil, {remember = true}); drain(s)
     local job = s.forget_all('one'); drain(s)
-    assert.equal('done', job.state); assert.same({}, s.cached('one')); assert.equal('gamma', s.cached('two').a)
+    assert.equal('done', job.state); assert.same({'a', 'b'}, job.keys)
+    assert.is_nil(s.cache['one/a']); assert.is_nil(s.cache['one/b']); assert.equal('gamma', s.cache['two/a'])
+  end)
+end)
+describe('credential service edges', function()
+  it('explains a credential store that cannot be built through the null backend #posix', function()
+    local lines = {}
+    local log = require('crier_obs.log').new{obs = {LOG_ERROR = 4, script_log = function(_, text) lines[#lines + 1] = text end}}
+    local s = new{fs = memory_fs(), state_dir = '/state', platform = 'Windows', log = log,
+      crypt32 = false, kernel32 = false, C = false}
+    local status = s.backend_status()
+    assert.equal('null', status.name); assert.matches('Windows DPAPI %(current user%) cannot be used', status.label)
+    assert.equal(status.label, status.reason); assert.matches('cannot be used', lines[1], 1, true)
+    s.status('default', 'token'); drain(s)
+    assert.equal('unavailable', s.status('default', 'token').state)
+    local job = s.commit('default', 'token', 'value'); drain(s)
+    assert.equal('failed', job.state); assert.equal('unavailable', job.error.kind)
+    s.close()
+  end)
+  it('refuses every operation over a corrupted index and reports invalid names', function()
+    local fs = memory_fs(); fs.files['/state/secrets/index.json'] = 'not json'
+    local s = new{fs = fs, state_dir = '/state', backend = backend()}
+    local results = {}
+    s.resolve('default', {'token'}, function(_, e) results.resolve = e end)
+    s.forget('default', 'token', function(_, e) results.forget = e end)
+    local job = s.commit('default', 'token', 'value', function(_, e) results.commit = e end)
+    s.commit('default', 'token', 'newer', function(_, e) results.second = e end)
+    drain(s)
+    for _, name in ipairs({'resolve', 'forget', 'commit', 'second'}) do
+      assert.equal('Credential index is corrupted', results[name].message, name)
+    end
+    assert.equal('failed', job.state)
+    local bad = s.forget('bad/set', 'token', function(_, e) results.bad = e end)
+    assert.equal('failed', bad.state); assert.equal('credential', results.bad.kind)
+    assert.equal('unavailable', s.status('bad/set', 'token').state)
+    local empty, called = s.resolve('default', {}, function(values) results.empty = values end), nil
+    assert.equal('done', empty.state); assert.same({}, results.empty)
+    s.forget_all('nothing', function(ok) called = ok end); assert.is_true(called)
+    assert.is_nil(s.commit('default', 'token', '   ', function(_, e) results.blank = e end).value)
+    assert.equal('missing', results.blank.kind)
+  end)
+  it('keeps going when the Secret Service canary cannot get random bytes, and reports failed forgets', function()
+    local fs = memory_fs(); fs.random_bytes = function() return nil, {message = 'no entropy'} end
+    local lines = {}
+    local log = require('crier_obs.log').new{obs = {LOG_WARNING = 3, script_log = function(_, text) lines[#lines + 1] = text end}}
+    local s = new{fs = fs, state_dir = '/state', platform = 'Linux', log = log, backends = {linux = backend('linux')}}
+    s.tick()
+    assert.equal('file', s.backend_status().name)
+    assert.equal('Encrypted credential file (Secret Service unavailable)', s.backend_status().label)
+    assert.same({'crier-obs: no entropy'}, lines)
+    local b = backend(); b.forget = function(_, cb) cb(nil, {kind = 'unavailable', message = 'locked'}) end
+    local other = new{fs = memory_fs(), state_dir = '/state', backend = b}
+    local forgotten = other.forget('default', 'token'); drain(other)
+    assert.equal('failed', forgotten.state); assert.equal('locked', forgotten.error.message)
+    local unbound = memory_fs(); unbound.files['/state/secrets/index.json'] = '{"default/token":"gone"}'
+    local third = new{fs = unbound, state_dir = '/state', backend = backend()}
+    local cleared = third.forget('default', 'token'); drain(third)
+    assert.equal('failed', cleared.state); assert.equal('unavailable', cleared.error.kind)
+    third.status('default', 'token'); drain(third)
+    assert.equal('unavailable', third.status('default', 'token').state)
+    local fail_fs = memory_fs(); fail_fs.mkdir_private = function() return nil, {message = 'read-only'} end
+    local fourth = new{fs = fail_fs, state_dir = '/state', backend = backend()}
+    local saved = fourth.commit('default', 'token', 'value'); drain(fourth)
+    assert.equal('failed', saved.state); assert.equal('read-only', saved.error.message)
   end)
 end)
 describe('encrypted credential files', function()

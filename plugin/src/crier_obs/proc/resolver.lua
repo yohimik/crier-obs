@@ -1,8 +1,11 @@
 local ffi = require("ffi")
 local M = {}
+-- Numeric identifiers compared as digit strings, so no precision is lost past 2^53.
 local function numeric_compare(a, b)
-  if #a ~= #b then return #a < #b and -1 or 1 end
-  return a < b and -1 or 1
+	if #a ~= #b then
+		return #a < #b and -1 or 1
+	end
+	return a < b and -1 or 1
 end
 function M.compare(a, b)
 	local function identifiers(text, prerelease)
@@ -94,14 +97,43 @@ function M.compare(a, b)
 		end
 	end
 end
+-- crier discovery and version check. The explicit path from the dialog wins; then the copy the
+-- installer put in <state>/bin; then the augmented PATH the env port builds (shell-profile and
+-- Homebrew directories included, since OBS started from the Dock does not have them).
 function M.new(deps)
 	local fs, env = deps.fs, deps.env or {}
+	local pin = assert(deps.pin, "resolver needs the pinned crier version")
 	local windows = (env.os or ffi.os) == "Windows"
 	local sep = windows and "\\" or "/"
-	local exe = windows and "crier.exe" or "crier"
 	local current = { state = "missing", message = "crier is not installed", button = "Install crier" }
 	local process
 	local self = {}
+	local function search_path()
+		local path = env.augmented_path or env.path
+		if type(path) == "function" then
+			path = path()
+		end
+		return path or (env.getenv and env.getenv("PATH")) or ""
+	end
+	-- An executable by absolute path, or the first match on the augmented PATH (".exe" on Windows).
+	function self.find_binary(binary)
+		if type(binary) ~= "string" or binary == "" then
+			return nil
+		end
+		if binary:find("[/\\]") then
+			return fs.exists(binary) and binary or nil
+		end
+		for dir in search_path():gmatch(windows and "[^;]+" or "[^:]+") do
+			local full = dir .. sep .. binary
+			if fs.exists(full) then
+				return full
+			end
+			if windows and not binary:lower():match("%.exe$") and fs.exists(full .. ".exe") then
+				return full .. ".exe"
+			end
+		end
+		return nil
+	end
 	function self.find(explicit)
 		if explicit and explicit ~= "" then
 			if fs.exists(explicit) then
@@ -109,26 +141,13 @@ function M.new(deps)
 			end
 			return nil, { kind = "missing", message = "Configured crier path does not exist" }
 		end
-		local paths = {}
-		if deps.state_dir then
-			paths[#paths + 1] = deps.state_dir .. sep .. "bin" .. sep .. exe
+		local managed = deps.state_dir and (deps.state_dir .. sep .. "bin" .. sep .. (windows and "crier.exe" or "crier"))
+		if managed and fs.exists(managed) then
+			return managed
 		end
-		local path = env.augmented_path or env.path
-		if type(path) == "function" then
-			path = path()
-		end
-		path = path or (env.getenv and env.getenv("PATH")) or ""
-		for dir in path:gmatch(windows and "[^;]+" or "[^:]+") do
-			paths[#paths + 1] = dir .. sep .. exe
-		end
-    local known = windows and {} or {
-      "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", ((env.getenv and env.getenv("HOME")) or "") .. "/.local/bin",
-    }
-    for _, dir in ipairs(known) do paths[#paths + 1] = dir .. sep .. exe end
-		for _, p in ipairs(paths) do
-			if fs.exists(p) then
-				return p
-			end
+		local found = self.find_binary("crier")
+		if found then
+			return found
 		end
 		return nil, { kind = "missing", message = "crier is not installed" }
 	end
@@ -162,19 +181,15 @@ function M.new(deps)
 			return current
 		end
 		local r, e = process.poll()
-    if e then
-      local failed = process; process = nil
-      if failed.cancel then failed.cancel()
-      elseif failed.close then failed.close()
-      else
-        if failed.kill then failed.kill() elseif failed.terminate then failed.terminate() end
-        if failed.detach then failed.detach() end
-      end
-      current.state, current.message = "failed", e.message or tostring(e)
-      return current, e
-    end
-		if not r then
+		if e then
+			local failed = process
+			process = nil
+			failed.cancel()
+			current.state, current.message = "failed", e.message or tostring(e)
 			return current, e
+		end
+		if not r then
+			return current
 		end
 		process = nil
 		if r.code ~= 0 or r.timed_out then
@@ -190,7 +205,7 @@ function M.new(deps)
 			current.message = "Cannot read crier version"
 			return current
 		end
-		local cmp = M.compare(version, deps.pin or "1.1.1")
+		local cmp = M.compare(version, pin)
 		if cmp == nil then
 			current.state = "failed"
 			current.message = "Invalid crier version"
@@ -201,7 +216,7 @@ function M.new(deps)
 		current.button = cmp < 0 and "Update crier" or "Install crier"
 		current.message = "crier " .. version .. " at " .. current.path
 		if cmp < 0 then
-			current.message = current.message .. " (older than " .. (deps.pin or "1.1.1") .. ")"
+			current.message = current.message .. " (older than " .. pin .. ")"
 		end
 		return current
 	end
@@ -210,18 +225,12 @@ function M.new(deps)
 	end
 	function self.detach()
 		if process then
-      local pending = process
-      process = nil
-      if pending.cancel then pending.cancel()
-      elseif pending.close then pending.close()
-      else
-        if pending.kill then pending.kill() elseif pending.terminate then pending.terminate() end
-        if pending.detach then pending.detach() end
-      end
-      current.state, current.message = "cancelled", "Version check cancelled"
+			local pending = process
+			process = nil
+			pending.cancel()
+			current.state, current.message = "cancelled", "Version check cancelled"
 		end
 	end
 	return self
 end
-M.semver_compare = M.compare
 return M

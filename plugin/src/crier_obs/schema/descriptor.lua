@@ -62,5 +62,4 @@ function M.build(names)
   end
   return out
 end
-M.all = M.build
 return M

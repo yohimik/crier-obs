@@ -16,17 +16,23 @@ describe('durable critical posts through plugin reload', function()
       local p = {pid = pid, child_pid = pid}
       function p.poll() if ready then return {code = 0, stdout = '{"results":[]}', stderr = ''} end end
       function p.detach() return {pid = pid, child_pid = pid} end
-      function p.kill() end
+      function p.cancel() return true end
       return p
     end
     function spawner.adopt(record)
-      return {pid = record.pid, poll = function() return {code = 0} end, detach = function() return record end}
+      return {pid = record.pid, poll = function() return {code = 0} end, detach = function() return record end,
+        cancel = function() return true end}
     end
+    function spawner.reap() return {} end
+    function spawner.current_pid() return 777 end
+    function spawner.alive() return false end
     local resolver = {find = function() return '/crier' end, status = function() return {state = 'ready'} end,
-      probe = function() end, tick = function() end, detach = function() end}
+      probe = function() end, tick = function() return {state = 'ready', message = 'crier ready'} end,
+      detach = function() end, find_binary = function() end}
     local function secrets()
       return {resolve = function(_, _, cb) cb({}) end, status = function() return {state = 'not stored'} end,
-        tick = function() end, scrub = function() end, close = function() end}
+        tick = function() end, scrub = function() end, close = function() end, clear_cache = function() end,
+        backend_status = function() return {state = 'ready', label = 'test'} end}
     end
     local settings = obs.obs_data_create()
     local function create()
@@ -40,7 +46,9 @@ describe('durable critical posts through plugin reload', function()
       assert.is_true(p.queue.size() <= 5)
     end
     assert.equal(10, p.queue.backlog_size())
-    p.tick(); assert.equal('snapshot-1', started[1]); p.unload()
+    -- A scene-collection switch unloads the script; the queued posts wait for the next load.
+    p.tick(); assert.equal('snapshot-1', started[1])
+    obs.emit(obs.OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING); p.unload()
     obs.obs_data_set_string(settings, 'cobs.title', 'changed-after-enqueue')
     p = create(); p.load(settings); p.update(settings); ready = true
     for _ = 1, 40 do p.tick(); assert.is_true(p.queue.size() <= 5) end

@@ -29,5 +29,4 @@ end
 function M.timeout()
   return M.new("timeout", "crier exceeded the run timeout")
 end
-M.exit = M.from_exit
 return M

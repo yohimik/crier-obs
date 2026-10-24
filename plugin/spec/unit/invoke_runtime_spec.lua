@@ -60,10 +60,93 @@ describe("invocation snapshots", function()
 		assert.equal("/config", p.cwd)
 		assert.is_nil(next(p.files))
 	end)
+	it("pins the untouched dialog's generated config and advanced --set list exactly", function()
+		local platforms = { "boosty", "discord", "facebook", "instagram", "linkedin", "mastodon", "reddit", "slack",
+			"telegram", "threads", "tiktok", "vk", "x", "youtube" }
+		local m = snapshot()
+		local p = assert(builder.build({ model = m, run = run, executable = "/bin/crier", caption = "c" }))
+		assert.same({ "--config", run.config, "--json", "--log-level", "info" }, p.args)
+		local publish = { caption = "c" }
+		for _, name in ipairs(platforms) do
+			publish[name] = { enabled = false }
+		end
+		assert.same({
+			publish = publish,
+			render = {
+				data = run.data,
+				height = 1080,
+				["hermetic-fonts"] = true,
+				template = "/state/templates/live.html",
+			},
+		}, json.decode(p.files[run.config]))
+		m.mode, m.base_config = "advanced", "/config/base.json"
+		local q = assert(builder.build({ model = m, run = run, executable = "/bin/crier", caption = "c" }))
+		local expected = { "--config", "/config/base.json", "--json" }
+		local sets = { "publish.caption=c", "render.data=" .. run.data }
+		for _, name in ipairs(platforms) do
+			sets[#sets + 1] = "publish." .. name .. ".enabled=false"
+		end
+		table.sort(sets)
+		for _, set in ipairs(sets) do
+			expected[#expected + 1] = "--set"
+			expected[#expected + 1] = set
+		end
+		assert.same(expected, q.args)
+		assert.same({}, q.files)
+	end)
+	it("turns crier's own video rendering off for a clip and leaves out platforms that cannot post video", function()
+		local m = snapshot()
+		m.custom_names = { "images", "clips" }
+		m.values["publish.custom.clips.kinds"] = { " Video " }
+		m.values["render.video.enabled"] = true
+		m.values["render.video.frames-input"] = "/frames"
+		for _, name in ipairs({ "boosty", "telegram", "youtube", "images", "clips" }) do
+			m.platforms[name] = true
+		end
+		local p = assert(builder.build({ model = m, run = run, executable = "/bin/crier", clip = "/clips/a.mp4" }))
+		local config = assert(json.decode(p.files[run.config]))
+		assert.is_false(config.render.video.enabled)
+		assert.equal("", config.render.video["frames-input"])
+		assert.equal("/clips/a.mp4", config.publish.input)
+		assert.is_false(config.publish.boosty.enabled)
+		assert.is_false(config.publish.custom.images.enabled)
+		assert.is_true(config.publish.custom.clips.enabled)
+		assert.is_true(config.publish.telegram.enabled)
+		assert.is_true(config.publish.youtube.enabled)
+		assert.same({ "Clip post leaves out platforms that cannot post video: boosty, images" }, p.warnings)
+		m.mode, m.base_config = "advanced", "/config/base.json"
+		local q = assert(builder.build({ model = m, run = run, executable = "/bin/crier", clip = "/clips/a.mp4" }))
+		local sets = {}
+		for i, arg in ipairs(q.args) do
+			if arg == "--set" then
+				sets[q.args[i + 1]] = true
+			end
+		end
+		for _, set in ipairs({ "render.video.enabled=false", "render.video.frames-input=", "publish.boosty.enabled=false",
+			"publish.custom.images.enabled=false", "publish.custom.clips.enabled=true", "publish.input=/clips/a.mp4" }) do
+			assert.is_true(sets[set], set)
+		end
+		m.mode = "generated"
+		for name in pairs(m.platforms) do
+			m.platforms[name] = false
+		end
+		m.platforms.boosty, m.platforms.images = true, true
+		local none, why = builder.build({ model = m, run = run, executable = "/bin/crier", clip = "/clips/a.mp4" })
+		assert.is_nil(none)
+		assert.equal("skipped", why.kind)
+		assert.equal("Clip post skipped: none of the selected platforms can post video (boosty, images)", why.message)
+		-- Credentials of the platforms left out are not resolved for the clip.
+		m.platforms.telegram = true
+		local r = assert(builder.build({ model = m, run = run, executable = "/bin/crier", clip = "/clips/a.mp4" }))
+		for _, key in ipairs(r.needs_secrets) do
+			assert.is_nil(key:find("boosty", 1, true))
+		end
+	end)
 	it("expands custom environment entries as config objects and clips with Unicode paths", function()
 		local m = snapshot()
 		m.custom_names = { "community" }
 		m.platforms.community = true
+		m.values["publish.custom.community.kinds"] = { "image", "video" }
 		m.values["publish.custom.community.env"] = { "FOO=a=b", "OTHER=🔴" }
 		local p = assert(builder.build({ model = m, run = run, executable = "/bin/crier", clip = "/clips/a 🔴.mp4" }))
 		local config = assert(json.decode(p.files[run.config]))
@@ -202,7 +285,17 @@ describe("queue, monotonic sessions and setup jobs", function()
 					return true
 				end,
 			},
-			env = {},
+			env = {
+				sandbox_status = function()
+					return { kind = "native", ok = true }
+				end,
+			},
+			find_binary = function() end,
+			runs = {
+				finish = function()
+					return true
+				end,
+			},
 			log = log,
 			secrets = {
 				backend_status = function()

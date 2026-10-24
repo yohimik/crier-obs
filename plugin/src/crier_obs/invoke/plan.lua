@@ -1,5 +1,14 @@
 local M = {}
 local json = require("crier_obs.json")
+-- Windows caps a command line at 32767 UTF-16 units; the margin covers the wrapper's own arguments.
+M.ARGV_LIMIT = 30000
+function M.argv_length(executable, args)
+	local length = #(executable or "") + 1
+	for _, arg in ipairs(args or {}) do
+		length = length + #arg + 3
+	end
+	return length
+end
 function M.env_name(key)
 	return "CRIER_" .. key:upper():gsub("[.%-]", "_")
 end
@@ -31,10 +40,30 @@ function M.with_secrets(plan, values, log)
 	out.env = env
 	return out
 end
-function M.disable_base_custom(plan, report)
+-- The custom destinations a `crier config --json --all` report of the base file defines, sorted.
+function M.base_custom_names(report)
 	local data = json.decode(report or "")
 	if type(data) ~= "table" or type(data.values) ~= "table" or getmetatable(data.values) ~= nil then
 		return nil, { kind = "configuration", message = "Cannot inspect custom destinations in the base configuration" }
+	end
+	local names, seen = {}, {}
+	for key in pairs(data.values) do
+		local name = type(key) == "string" and key:match("^publish%.custom%.([^.]+)%.")
+		if name and not seen[name] then
+			if not name:match("^[a-z0-9%-]+$") then
+				return nil, { kind = "configuration", message = "Invalid custom destination in base configuration" }
+			end
+			seen[name] = true
+			names[#names + 1] = name
+		end
+	end
+	table.sort(names)
+	return names
+end
+function M.disable_base_custom(plan, report)
+	local names, err = M.base_custom_names(report)
+	if not names then
+		return nil, err
 	end
 	if not plan.base_custom_args then
 		plan.base_custom_args = {}
@@ -47,32 +76,17 @@ function M.disable_base_custom(plan, report)
 		plan.args[i] = arg
 	end
 	plan.argv = plan.args
-	local names, seen, selected = {}, {}, {}
+	local selected = {}
 	for _, name in ipairs(plan.selected_custom_names or {}) do
 		selected[name] = true
 	end
-	for key in pairs(data.values) do
-		local name = type(key) == "string" and key:match("^publish%.custom%.([^.]+)%.")
-		if name and not seen[name] then
-			if not name:match("^[a-z0-9%-]+$") then
-				return nil, { kind = "configuration", message = "Invalid custom destination in base configuration" }
-			end
-			seen[name] = true
-			names[#names + 1] = name
-		end
-	end
-	table.sort(names)
 	for _, name in ipairs(names) do
 		if not selected[name] then
 			plan.args[#plan.args + 1] = "--set"
 			plan.args[#plan.args + 1] = "publish.custom." .. name .. ".enabled=false"
 		end
 	end
-	local length = 0
-	for _, arg in ipairs(plan.args) do
-		length = length + #arg + 3
-	end
-	if length > (plan.argv_limit or 30000) then
+	if M.argv_length(plan.executable, plan.args) > (plan.argv_limit or M.ARGV_LIMIT) then
 		return nil, { kind = "arguments", message = "Base custom destinations exceed the command-line limit" }
 	end
 	return names

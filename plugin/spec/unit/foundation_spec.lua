@@ -5,10 +5,11 @@ local i18n = require("crier_obs.i18n")
 local descriptors = require("crier_obs.schema.descriptor")
 local layout = require("crier_obs.schema.layout")
 local models = require("crier_obs.settings.model")
-local properties = require("crier_obs.schema.properties")
 local obs = require("stub.obslua")
 local fs_module = require("crier_obs.ports.fs")
 local env_module = require("crier_obs.ports.env")
+local host = require("crier_obs.proc.host")
+local builder = require("crier_obs.invoke.builder")
 local ffi = require("ffi")
 
 describe("strict JSON", function()
@@ -135,12 +136,20 @@ describe("secret scrubbing and rate limiting", function()
     local unknown = log.scrub('{"token":"a\\"UNKNOWN_SUFFIX"}')
     assert.equal("***", assert(json.decode(unknown)).token)
     assert.equal('{"token":"***"', log.scrub('{"token":"unterminated'))
+    -- OBS shows LOG_DEBUG only with --verbose: the Debug logging setting lifts debug lines to
+    -- LOG_INFO with a [debug] marker; without it they stay at LOG_DEBUG.
     local debug_log = logger.new({ obs = obs })
-    assert.is_false(debug_log.debug("off"))
+    assert.is_true(debug_log.debug("quiet line"))
+    assert.same({ level = obs.LOG_DEBUG, text = "crier-obs: quiet line" }, obs.logs[#obs.logs])
     debug_log.set_debug(true)
-    assert.is_true(debug_log.debug("on"))
+    assert.is_true(debug_log.debug_enabled())
+    assert.is_true(debug_log.debug("visible line"))
+    assert.same({ level = obs.LOG_INFO, text = "crier-obs: [debug] visible line" }, obs.logs[#obs.logs])
+    debug_log.info("plain info")
+    assert.same({ level = obs.LOG_INFO, text = "crier-obs: plain info" }, obs.logs[#obs.logs])
     debug_log.set_debug(false)
-    assert.is_false(debug_log.debug("off"))
+    assert.is_true(debug_log.debug("quiet again"))
+    assert.same({ level = obs.LOG_DEBUG, text = "crier-obs: quiet again" }, obs.logs[#obs.logs])
     log.register_secret("a/b?c d")
     assert.equal(
       "https://example.test/***?other=***",
@@ -153,7 +162,7 @@ describe("secret scrubbing and rate limiting", function()
     assert.equal('{"error":"***"}', log.scrub('{"error":"\\u003c\\u0026\\u003e\\u2028\\u2029"}'))
     log.clear_secrets()
     assert.equal("secret", log.scrub("secret"))
-    assert.is_false(logger.new({}).debug("x"))
+    assert.is_true(logger.new({}).debug("x"))
   end)
 end)
 
@@ -221,78 +230,6 @@ describe("registry, model and OBS properties", function()
     assert.is_false(store.has(data, "render.width"))
     store.set(data, "cobs.base_config", "string", "/base.json")
     assert.equal("advanced", model.snapshot(data).mode)
-  end)
-  it("builds all fields with descriptions, stable callbacks, navigator visibility and safe secrets", function()
-    local calls = {}
-    local ui = properties.new({
-      obs = obs,
-      model = model,
-      callbacks = {
-        save_secret = function(k)
-          calls[#calls + 1] = k
-        end,
-      },
-      status = {
-        results = { { target = "telegram", ok = false, error = "unavailable" }, { text = "Warning", warning = true } },
-      },
-    })
-    local props = ui.build(data)
-    for _, p in ipairs(props.ordered) do
-      assert.is_string(p.description)
-      assert.is_true(#p.description > 0)
-    end
-    local width = props.by_name["render.width"]
-    assert.is_false(width.visible)
-    assert.is_false(width.modified(props, width, data))
-    obs.obs_data_set_string(data, "cobs.section", "render")
-    assert.is_true(props.by_name["cobs.section"].modified(props, nil, data))
-    assert.is_true(width.visible)
-    assert.equal(obs.OBS_TEXT_PASSWORD, props.by_name["publish.telegram.token"].args[1])
-    assert.is_true(props.by_name["publish.telegram.token.save"].callback())
-    assert.same({ "publish.telegram.token" }, calls)
-    assert.equal(obs.OBS_TEXT_INFO_ERROR, props.by_name["cobs.result.1"].info_type)
-    obs.obs_data_set_string(data, "cobs.section", "staging")
-    props.by_name["cobs.section"].modified(props, nil, data)
-    assert.is_true(props.by_name["cobs.tunnel_guidance"].visible)
-    local store = require("crier_obs.settings.store").new({ obs = obs })
-    store.set(data, "cobs.custom_names", "list", { "mine" })
-    obs.obs_data_set_string(data, "cobs.section", "custom")
-    obs.obs_data_set_string(data, "cobs.custom_platform", "mine")
-    props.by_name["cobs.section"].modified(props, nil, data)
-    assert.is_not_nil(props.by_name["publish.custom.mine.command"])
-    assert.is_true(props.by_name["publish.custom.mine.command"].visible)
-    assert.is_not_nil(props.by_name["publish.custom.mine.enabled"])
-    store.set(data, "cobs.custom_names", "list", { "next" })
-    props.by_name["cobs.refresh"].callback()
-    assert.is_nil(props.by_name["publish.custom.mine.command"])
-    assert.is_nil(props.by_name["publish.custom.mine.enabled"])
-    assert.is_not_nil(props.by_name["publish.custom.next.command"])
-    store.set(data, "cobs.custom_names", "list", { "mine", "mine", "BAD" })
-    local duplicate_safe = ui.build(data)
-    assert.is_not_nil(duplicate_safe.by_name["publish.custom.mine.command"])
-    assert.is_nil(duplicate_safe.by_name["publish.custom.BAD.command"])
-    local changing = { results = {} }
-    local live_ui = properties.new({
-      obs = obs,
-      model = model,
-      status = function()
-        return changing
-      end,
-    })
-    local live_props = live_ui.build(data)
-    changing.results =
-      { { target = "telegram", ok = false, message = "", error = "denied", account = "@bot", ms = 88 } }
-    changing.crier = "crier 1.1.1 at /test"
-    changing.secrets = { ["publish.telegram.token"] = "stored ✓" }
-    live_props.by_name["cobs.refresh"].callback()
-    assert.matches("denied", live_props.by_name["cobs.result.1"].label, 1, true)
-    assert.matches("@bot", live_props.by_name["cobs.result.1"].label, 1, true)
-    assert.matches("88 ms", live_props.by_name["cobs.result.1"].label, 1, true)
-    assert.equal(changing.crier, live_props.by_name["cobs.status.crier"].label)
-    assert.equal("stored ✓", live_props.by_name["publish.telegram.token.status"].label)
-    changing.results = {}
-    live_props.by_name["cobs.refresh"].callback()
-    assert.is_false(live_props.by_name["cobs.result.1"].visible)
   end)
 end)
 
@@ -626,10 +563,10 @@ describe("Flatpak host policy", function()
         end,
       },
     })
-    assert.is_nil(no_home.prepare_host({ executable = "crier", env = {} }, fs))
+    assert.is_nil(host.prepare({ executable = "crier", env = {} }, no_home, fs))
     assert.is_nil(no_home.path():match("^:"))
     local plan = { executable = "/bin/true" }
-    assert.equal(plan, native.prepare_host(plan, fs))
+    assert.equal(plan, host.prepare(plan, native, fs))
     local marker = env_module.new({
       platform = "Linux",
       C = {
@@ -661,7 +598,7 @@ describe("Flatpak host policy", function()
       end,
     }
     assert.is_false(flatpak.sandbox_status(missing).ok)
-    assert.equal("sandbox", select(2, flatpak.prepare_host(plan, missing)).kind)
+    assert.equal("sandbox", select(2, host.prepare(plan, flatpak, missing)).kind)
     assert.equal("snap", environment({ SNAP = "/snap/obs" }).sandbox_status(fs).kind)
     assert.is_true(environment({ SNAP_NAME = "obs" }).snap())
   end)
@@ -697,7 +634,8 @@ describe("Flatpak host policy", function()
         })),
       },
     }
-    local prepared = assert(flatpak.prepare_host(plan, fs))
+    plan.path_keys = builder.path_keys({})
+    local prepared = assert(host.prepare(plan, flatpak, fs))
     assert.equal("/usr/bin/flatpak-spawn", prepared.executable)
     assert.equal("--env-fd=3", prepared.args[2])
     assert.equal("--clear-env", prepared.args[3])
@@ -710,7 +648,7 @@ describe("Flatpak host policy", function()
     end
     assert.equal("/home/u/run", plan.cwd)
     local no_cwd = { executable = "/usr/bin/crier", args = { "--version" }, env = {} }
-    assert(flatpak.prepare_host(no_cwd, fs))
+    assert(host.prepare(no_cwd, flatpak, fs))
     local cases = {
       { cwd = "/tmp" },
       { executable = "/app/bin/crier" },
@@ -727,18 +665,19 @@ describe("Flatpak host policy", function()
       { args = { "--set", "render.template=relative.html" } },
       { env = { ["BAD=NAME"] = "value" } },
       { env = { VALUE = "bad\0value" } },
+      { args = { "--set", "publish.custom.mine.overlay=/home/u/ok.html,/tmp/t.html" } },
     }
     for _, override in ipairs(cases) do
-      local current = { executable = "/usr/bin/crier", env = {}, cwd = "/home/u" }
+      local current = { executable = "/usr/bin/crier", env = {}, cwd = "/home/u", path_keys = builder.path_keys({ "mine" }) }
       for k, v in pairs(override) do
         current[k] = v
       end
-      assert.is_nil(flatpak.prepare_host(current, fs))
+      assert.is_nil(host.prepare(current, flatpak, fs))
     end
-    assert(flatpak.prepare_host({
+    assert(host.prepare({
       executable = "/usr/bin/crier",
       env = {},
       files = { ["/home/u/config.json"] = '{"render":{"data":"env:MY","base-url":"https://example.com"}}' },
-    }, fs))
+    }, flatpak, fs))
   end)
 end)

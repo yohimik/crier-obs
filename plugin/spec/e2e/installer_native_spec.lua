@@ -26,10 +26,13 @@ describe("official installer integration #posix", function()
 			pin = "1.1.1",
 			state_dir = state,
 			url = "file://" .. fakes .. "/install.sh",
+			log = require("crier_obs.log").new({ obs = obs }),
 		})
 		assert(installer.start())
 		local result
 		for _ = 1, 500 do
+			-- The plugin's heartbeat ticks the resolver the installer waits for.
+			resolver.tick()
 			result = installer.tick()
 			if result.state ~= "installing" then
 				break
@@ -42,6 +45,8 @@ describe("official installer integration #posix", function()
 		ffi.C.setenv("FAKE_INSTALL_FAIL", "1", 1)
 		assert(installer.start())
 		for _ = 1, 500 do
+			-- The plugin's heartbeat ticks the resolver the installer waits for.
+			resolver.tick()
 			result = installer.tick()
 			if result.state ~= "installing" then
 				break

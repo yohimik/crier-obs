@@ -47,6 +47,7 @@ local function fixture(options)
 				return true
 			end,
 		},
+		find_binary = function() end,
 		secrets = {
 			resolve = function(_, _, cb)
 				if options.delay then
@@ -54,6 +55,9 @@ local function fixture(options)
 				else
 					cb({})
 				end
+			end,
+			backend_status = function()
+				return { state = "ready", label = "test store" }
 			end,
 		},
 		spawner = {

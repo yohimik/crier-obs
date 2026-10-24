@@ -90,9 +90,19 @@ local function fixture(options)
 					end
 					return { pid = 100 + #spawned }
 				end,
-				kill = function() end,
-				terminate = function() end,
+				cancel = function()
+					return true
+				end,
 			}
+		end,
+		reap = function()
+			return {}
+		end,
+		current_pid = function()
+			return 4242
+		end,
+		alive = function()
+			return false
 		end,
 		adopt = function(record)
 			if record.pid == 3 then
@@ -118,13 +128,16 @@ local function fixture(options)
 			}
 		end,
 	}
-	local state = { state = "ready", message = "crier ready" }
+	local state = options.resolver_state or { state = "ready", message = "crier ready", path = "/fake/crier" }
 	local resolver = {
 		find = function()
 			if options.missing then
 				return nil, failure("missing crier")
 			end
 			return "/fake/crier"
+		end,
+		find_binary = function(name)
+			return fs.exists("C:/tools/" .. name .. ".exe") and "C:/tools/" .. name .. ".exe" or nil
 		end,
 		probe = function()
 			return {}
@@ -138,7 +151,12 @@ local function fixture(options)
 		detach = function() end,
 	}
 	local secret = {
-		backend_name = "fake",
+		backend_status = function()
+			return { state = "ready", label = "Test credential store" }
+		end,
+		forget_all = function(_, cb)
+			cb(not options.secret_fail, options.secret_fail and failure("forget failed"))
+		end,
 		tick = function()
 			local jobs = pending
 			pending = {}
@@ -173,14 +191,17 @@ local function fixture(options)
 		clear_cache = function() end,
 		close = function() end,
 	}
+	local install = options.install or { state = "idle", message = "" }
 	local installer = {
 		start = function()
 			return nil, failure("installer failed")
 		end,
 		status = function()
-			return { state = "idle" }
+			return install
 		end,
-		tick = function() end,
+		tick = function()
+			return install
+		end,
 		detach = function() end,
 	}
 	local paths = { root = "/state", runs = "/state/runs", template = "/state/template.html" }
@@ -191,6 +212,12 @@ local function fixture(options)
 			os = "Windows",
 			augmented_path = function()
 				return "C:/tools"
+			end,
+			crier_names = function()
+				return options.inherited or {}
+			end,
+			sandbox_status = function()
+				return options.sandbox or { kind = "native", ok = true }
 			end,
 		},
 		paths = paths,
@@ -206,12 +233,31 @@ local function fixture(options)
 	obs.obs_data_set_string(data, "cobs.crier_path", "/fake/crier")
 	p.load(data)
 	p.update(data)
-	return p, data, { files = files, spawned = spawned, records = records, finishes = finishes, options = options }
+	return p,
+		data,
+		{
+			files = files,
+			spawned = spawned,
+			records = records,
+			finishes = finishes,
+			options = options,
+			resolver = state,
+			install = install,
+		}
 end
 local function finish(p, data)
 	p.unload()
 	obs.obs_data_release(data)
 	obs.assert_no_leaks()
+end
+local function lines(level, text)
+	local out = {}
+	for _, line in ipairs(obs.logs) do
+		if (not level or line.level == level) and (not text or line.text:find(text, 1, true)) then
+			out[#out + 1] = line.text
+		end
+	end
+	return out
 end
 describe("dialog actions and recovery", function()
 	it("runs manual, dry-run and setup actions, refreshing credentials and discovered tool rows", function()
@@ -275,33 +321,65 @@ describe("dialog actions and recovery", function()
 		p.callbacks.post()
 		finish(p, data)
 	end)
-	it("reports missing binaries, unwritable state and failed run creation without spawning", function()
-		for _, options in ipairs({ { missing = true }, { init_fail = true }, { create_fail = true } }) do
-			local p, data, state = fixture(options)
+	it("reports a missing crier at error level once per rate window, and spawns nothing", function()
+		local p, data, state = fixture({ missing = true })
+		for _ = 1, 5 do
 			p.callbacks.post()
-			p.callbacks.check()
-			assert.equal(0, #state.spawned)
-			finish(p, data)
 		end
-		local p, data, state = fixture()
+		assert.equal(0, #state.spawned)
+		assert.same({ "crier-obs: missing crier" }, lines(obs.LOG_ERROR, "missing crier"))
+		obs.advance(31)
+		p.callbacks.post()
+		assert.equal(2, #lines(obs.LOG_ERROR, "missing crier"))
+		finish(p, data)
+	end)
+	it("still reports a post's missing crier right after the status row said it is not installed", function()
+		local p, data = fixture({ missing = true, resolver_state = { state = "missing", message = "crier is not installed" } })
+		p.tick()
+		assert.same({ "crier-obs: crier is not installed; click Install crier" }, lines(obs.LOG_WARNING, "click Install"))
+		p.callbacks.post()
+		assert.same({ "crier-obs: missing crier" }, lines(obs.LOG_ERROR, "missing crier"))
+		finish(p, data)
+	end)
+	it("shows an unwritable state folder in the Run logs row and the log", function()
+		local p, data, state = fixture({ init_fail = true })
+		assert.equal("State folder is unavailable: state unavailable", p.status().logs)
+		assert.same({ "crier-obs: state unavailable" }, lines(obs.LOG_ERROR, "state unavailable"))
+		p.callbacks.post()
+		p.callbacks.check()
+		assert.equal(0, #state.spawned)
+		assert.equal(1, #lines(obs.LOG_ERROR, "State directory is unavailable"))
+		finish(p, data)
+		p, data, state = fixture({ create_fail = true })
+		p.callbacks.post()
+		p.callbacks.check()
+		assert.equal(0, #state.spawned)
+		assert.equal(2, #lines(obs.LOG_ERROR, "run unavailable"))
+		finish(p, data)
+		p, data, state = fixture()
 		obs.obs_data_set_bool(data, "publish.telegram.enabled", false)
 		p.update(data)
 		p.callbacks.post()
 		assert.equal(0, #state.spawned)
+		assert.equal(1, #lines(obs.LOG_WARNING, "No platform is selected"))
 		finish(p, data)
 	end)
 	it("persists failed JSON/data/config preparation and bounds queued manual requests", function()
 		local p, data, state = fixture({ write_fail = "/data.json$" })
 		p.callbacks.post()
 		p.callbacks.check()
-		assert.is_true(#state.finishes >= 2)
+		assert.equal(2, #state.finishes)
+		for _, item in ipairs(state.finishes) do
+			assert.equal(1, item.result.code)
+			assert.equal("disk full", item.result.stderr)
+		end
 		finish(p, data)
 		p, data, state = fixture()
 		obs.obs_data_set_double(data, "render.scale", math.huge)
 		p.update(data)
 		p.callbacks.post()
 		p.callbacks.check()
-		assert.is_true(#state.finishes >= 1)
+		assert.equal(2, #state.finishes)
 		finish(p, data)
 		p, data, state = fixture()
 		for _ = 1, 8 do
@@ -327,13 +405,83 @@ describe("dialog actions and recovery", function()
 			{ pid = 4, event = "manual" },
 		}
 		local p, data, state = fixture({ adopt = records })
+		assert.same({ "crier-obs: adoption unavailable" }, lines(obs.LOG_WARNING, "adoption unavailable"))
+		assert.same({ "crier-obs: Adopted 2 detached posts from an earlier load" }, lines(obs.LOG_INFO, "Adopted 2"))
 		p.tick()
 		assert.equal("Last run finished with code 0", p.status().last_run)
-		assert.is_true(#state.records >= 1)
+		assert.same({ "crier-obs: Adopted start post finished with code 0" }, lines(obs.LOG_INFO, "finished with code"))
+		assert.same({ "crier-obs: poll failed" }, lines(obs.LOG_WARNING, "poll failed"))
+		local journaled
+		for _, item in ipairs(state.records) do
+			if item.record and item.run and item.run.journal == "/one" then
+				journaled = item.record
+			end
+		end
+		assert.equal("done", journaled.state)
+		local cancelled = false
+		for _, item in ipairs(state.records) do
+			cancelled = cancelled or item.cancelled == true
+		end
+		assert.is_true(cancelled)
 		finish(p, data)
-		p, data, state = fixture({ adopt = { { pid = 1, event = "start" } }, adopt_pending = true })
+		p, data, state = fixture({ adopt = { { pid = 1, event = "start", created_at = os.time() } }, adopt_pending = true })
 		finish(p, data)
 		assert.is_true(state.records[1].detached)
+	end)
+	it("stops polling an adopted run that outlived its timeout and journals it as unknown", function()
+		local p, data, state = fixture({
+			adopt = { { pid = 1, event = "start", created_at = os.time() - 900 - 3601, journal = "/stale" } },
+			adopt_pending = true,
+		})
+		p.tick()
+		assert.same(
+			{ "crier-obs: Adopted start post stopped reporting; its result is unknown" },
+			lines(obs.LOG_WARNING, "stopped reporting")
+		)
+		assert.equal("failed", state.records[#state.records].record.state)
+		assert.equal("Run stopped reporting", state.records[#state.records].record.error)
+		p.tick()
+		assert.equal(1, #lines(obs.LOG_WARNING, "stopped reporting"))
+		finish(p, data)
+	end)
+	it("shows an installer failure in the crier row and logs the outdated crier once", function()
+		local p, data, state = fixture({
+			install = { state = "failed", message = "Install failed: sha256 digest mismatch" },
+			resolver_state = { state = "outdated", version = "1.0.0", path = "/fake/crier",
+				message = "crier 1.0.0 at /fake/crier (older than 1.1.1)" },
+		})
+		local status = p.status()
+		assert.equal("Install failed: sha256 digest mismatch", status.crier)
+		assert.equal("error", status.crier_level)
+		assert.is_true(status.update_available)
+		for _ = 1, 5 do
+			p.tick()
+		end
+		assert.same(
+			{ "crier-obs: crier 1.0.0 at /fake/crier is older than 1.1.1; click Update crier" },
+			lines(obs.LOG_WARNING, "older than")
+		)
+		state.install.state, state.install.message = "idle", ""
+		assert.equal("crier 1.0.0 at /fake/crier (older than 1.1.1)", p.status().crier)
+		assert.equal("warning", p.status().crier_level)
+		state.resolver.state, state.resolver.version, state.resolver.message = "ready", "1.1.1", "crier 1.1.1 at /fake/crier"
+		p.tick()
+		assert.same({ "crier-obs: crier 1.1.1 at /fake/crier" }, lines(obs.LOG_INFO, "crier 1.1.1 at"))
+		finish(p, data)
+	end)
+	it("names inherited CRIER_* variables at debug level and warns about sandbox limits once", function()
+		local p, data = fixture({
+			inherited = { "CRIER_CONFIG", "CRIER_PUBLISH_TELEGRAM_TOKEN" },
+			sandbox = { kind = "flatpak", ok = false, message = "Flatpak host access is unavailable" },
+		})
+		local named = lines(obs.LOG_DEBUG, "inherited CRIER_* variables")
+		assert.equal(1, #named)
+		assert.matches("CRIER_CONFIG, CRIER_PUBLISH_TELEGRAM_TOKEN", named[1], 1, true)
+		assert.same({ "crier-obs: Flatpak host access is unavailable" }, lines(obs.LOG_WARNING, "Flatpak"))
+		obs.obs_data_set_bool(data, "cobs.debug", true)
+		p.update(data)
+		assert.equal(1, #lines(obs.LOG_INFO, "[debug] inherited CRIER_* variables"))
+		finish(p, data)
 	end)
 	it("refreshes live credentials only on heartbeat and skips a quit without ready credentials", function()
 		local p, data, state = fixture({ resolve_fail = true })
@@ -344,16 +492,42 @@ describe("dialog actions and recovery", function()
 		p.tick()
 		obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
 		assert.equal(0, #state.spawned)
+		assert.same({ "crier-obs: quit post skipped: credentials are not ready" }, lines(obs.LOG_WARNING, "quit post skipped"))
 		finish(p, data)
+		local resolved = 0
 		p, data = fixture({ pending_secret = "new" })
+		local resolve = p.secrets.resolve
+		-- Counts the live-session resolutions (the ones that keep values); posts resolve on their own.
+		p.secrets.resolve = function(set, keys, cb, options)
+			if options and options.remember then
+				resolved = resolved + 1
+			end
+			return resolve(set, keys, cb, options)
+		end
 		obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED)
 		p.tick()
+		assert.is_true(p.scheduler.stream.cache_ready)
 		obs.obs_data_set_bool(data, "publish.discord.enabled", true)
 		p.update(data)
+		assert.is_false(p.scheduler.stream.cache_ready)
 		p.tick()
+		p.tick()
+		assert.is_true(p.scheduler.stream.cache_ready)
+		assert.equal(2, resolved)
 		p.callbacks.save_secret("publish.telegram.token")
+		assert.is_false(p.scheduler.stream.cache_ready)
+		p.tick()
+		p.tick()
+		assert.is_true(p.scheduler.stream.cache_ready)
+		assert.equal(3, resolved)
 		p.callbacks.forget_secret("publish.telegram.token")
 		p.tick()
+		p.tick()
+		assert.equal(4, resolved)
+		p.callbacks.forget_all()
+		p.tick()
+		p.tick()
+		assert.equal(5, resolved)
 		finish(p, data)
 	end)
 	it("skips an absent replay clip and never reports a failed quit spawn as posted", function()

@@ -1,4 +1,5 @@
 local bit = require("bit")
+local plans = require("crier_obs.invoke.plan")
 local M = {}
 local K = {
 	0x428a2f98,
@@ -123,5 +124,45 @@ function M.fingerprint(fs, path)
 		return nil, { kind = "configuration", message = "Base configuration exceeds 8 MiB" }
 	end
 	return M.sha256(text)
+end
+-- Runs `crier config --json --all` on the plan's base file with a plain environment. poll() returns
+-- nil while it runs, the report text once the probe exits 0 and the file still has the fingerprint
+-- it had when the probe started, or false and an error. cancel() is the process's own.
+function M.inspect(spawner, fs, plan)
+	local fingerprint, e = M.fingerprint(fs, plan.base_config)
+	if not fingerprint then
+		return nil, e
+	end
+	local process, spawn_error = spawner.spawn(plans.base_probe(plan))
+	if not process then
+		return nil, spawn_error
+	end
+	local inspection = { fingerprint = fingerprint, process = process }
+	function inspection.poll()
+		local r, poll_error = process.poll()
+		if poll_error then
+			return false, poll_error
+		end
+		if not r then
+			return nil
+		end
+		if r.code ~= 0 or r.timed_out then
+			return false,
+				{
+					kind = "configuration",
+					message = "Cannot inspect the base configuration (exit " .. tostring(r.code) .. ")",
+				}
+		end
+		local current, read_error = M.fingerprint(fs, plan.base_config)
+		if current ~= fingerprint then
+			return false,
+				read_error or { kind = "configuration", message = "Base configuration changed while it was being checked" }
+		end
+		return r.stdout or ""
+	end
+	function inspection.cancel()
+		return process.cancel()
+	end
+	return inspection
 end
 return M

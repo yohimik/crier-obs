@@ -24,7 +24,7 @@ function M.new(deps)
       for i, p in ipairs(pending) do if p.event == 'interval' then victim = i; break end end
       if victim then
         local dropped = table.remove(pending, victim)
-        if dropped.cancel then dropped.cancel() end
+        dropped.cancel()
         if deps.on_drop then deps.on_drop(dropped, 'queue capacity reached') end
       elseif critical(job) then return spill(job)
       else return false, 'full' end
@@ -54,16 +54,24 @@ function M.new(deps)
     end
     return active
   end
-  function self.detach()
+  -- Unload: a running post is detached (crier keeps going and the next load adopts it). Posts that
+  -- have not started are spilled for the next load of this process, or, when OBS is quitting
+  -- (options.skip), cancelled with that reason: a stale "Live now" must never post at the next launch.
+  function self.detach(options)
+    options = options or {}
+    local spilling = backlog and not options.skip
     local records, last_error = {}, nil
     if active then
       if active.finished() then done(active)
-      elseif backlog and critical(active) and active.state ~= 'running' then
+      elseif options.skip and active.state ~= 'running' then
+        active.cancel(options.skip)
+        if backlog then backlog.ack(active) end
+      elseif spilling and critical(active) and active.state ~= 'running' then
         local ok, reason = spill(active)
         if not ok then
-          if active.cancel then active.cancel() end
+          active.cancel()
           last_error = {kind = 'queue', message = reason}
-        elseif active.park then
+        else
           local parked, err = active.park()
           if not parked then last_error = err or {kind = 'queue', message = 'Cannot park queued post safely'} end
         end
@@ -77,11 +85,11 @@ function M.new(deps)
     end
     for _, job in ipairs(pending) do
       local preserved = false
-      if backlog and critical(job) then
+      if spilling and critical(job) then
         local reason; preserved, reason = spill(job)
         if not preserved then last_error = {kind = 'queue', message = reason} end
       end
-      if not preserved and job.cancel then job.cancel() end
+      if not preserved then job.cancel(options.skip) end
     end
     pending = {}
     if last_error then return nil, last_error end
@@ -91,7 +99,7 @@ function M.new(deps)
     for i = #pending, 1, -1 do
       if pending[i].event == 'interval' then
         local dropped = table.remove(pending, i)
-        if dropped.cancel then dropped.cancel() end
+        dropped.cancel()
         if deps.on_drop then deps.on_drop(dropped, 'stream ended') end
       end
     end

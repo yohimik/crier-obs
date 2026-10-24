@@ -1,22 +1,32 @@
 local datadoc = require("crier_obs.invoke.datadoc")
 local builder = require("crier_obs.invoke.builder")
+local plans = require("crier_obs.invoke.plan")
+local base = require("crier_obs.invoke.base")
 local job_module = require("crier_obs.run.job")
 local descriptor = require("crier_obs.schema.descriptor")
+local models = require("crier_obs.settings.model")
+local i18n = require("crier_obs.i18n")
+local json = require("crier_obs.json")
 local version = require("crier_obs.version")
 local M = {}
+-- An adopted run that still reports "running" this long after its run timeout is treated as lost
+-- (its pid may name another process by now) and stops being polled.
+M.ADOPTION_GRACE = 3600
+local QUIT_SKIP = "Post skipped: OBS quit before it started"
 function M.new(deps)
 	deps = deps or {}
 	local obs = deps.obs or require("crier_obs.ports.obs")
+	local t = i18n.new(obs.obs_get_locale())
 	local env = deps.env or require("crier_obs.ports.env").new({})
 	local fs = deps.fs or require("crier_obs.ports.fs").new({ obs = obs, env = env })
 	local clock = deps.clock or require("crier_obs.ports.clock").new({ obs = obs })
 	local log = deps.log or require("crier_obs.log").new({ obs = obs, clock = clock })
 	local store = deps.store or require("crier_obs.settings.store").new({ obs = obs })
-	local model_port = deps.model or require("crier_obs.settings.model").new({ obs = obs, store = store })
+	local model_port = deps.model or models.new({ obs = obs, store = store })
 	local paths = deps.paths
 		or require("crier_obs.state.paths").new({
 			env = env,
-			state_dir = deps.state_dir or (env.getenv and env.getenv("CRIER_OBS_STATE_DIR")),
+			state_dir = deps.state_dir or env.getenv("CRIER_OBS_STATE_DIR"),
 		})
 	local spawner = deps.spawner
 		or require("crier_obs.proc.spawner").new({ env = env, fs = fs, clock = clock, log = log })
@@ -27,9 +37,16 @@ function M.new(deps)
 			spawner = spawner,
 			pin = version.CRIER_VERSION,
 			state_dir = paths.root,
-			json = require("crier_obs.json"),
+			json = json,
 		})
-	local runs = deps.runs or require("crier_obs.state.runs").new({ fs = fs, clock = clock, paths = paths })
+	local runs = deps.runs
+		or require("crier_obs.state.runs").new({
+			fs = fs,
+			clock = clock,
+			paths = paths,
+			pid = spawner.current_pid(),
+			boot_id = env.boot_id(),
+		})
 	local secrets = deps.secrets
 		or require("crier_obs.secrets.service").new({
 			obs = obs,
@@ -45,48 +62,114 @@ function M.new(deps)
 		or require("crier_obs.invoke.installer").new({
 			fs = fs,
 			env = env,
+			log = log,
 			spawner = spawner,
 			resolver = resolver,
 			state_dir = paths.root,
 			pin = version.CRIER_VERSION,
 		})
-	local settings, model, scheduler, queue, spool
+	local ping = deps.ping
+		or require("crier_obs.run.ping").new({
+			fs = fs,
+			spawner = spawner,
+			secrets = secrets,
+			log = log,
+			env = env,
+			find_binary = resolver.find_binary,
+			runs = runs,
+		})
+	local settings, model, scheduler, queue
 	local loaded = false
-	local initialized = false
+	local initialized, state_error = false, nil
 	local live_recheck = false
 	local credential_revision = 0
 	local adopted = {}
-	local last_run = "No posts yet"
+	local last_run = t("no_posts")
 	local recheck = false
+	local logged_resolver
+	-- Frontend context read on the UI thread (events, script_update, buttons); posts the heartbeat
+	-- builds on the graphics thread use this copy instead of calling the frontend getters there.
+	local frontend = {}
+	local preflight
 	local self = { paths = paths, spawner = spawner, secrets = secrets, resolver = resolver, runs = runs }
-	local json = require("crier_obs.json")
-	local function secret_keys(m)
-		local keys = {}
-		for _, d in ipairs(descriptor.build(m.custom_names)) do
-			if
-				d.secret
-				and (
-					(d.platform and m.platforms[d.platform])
-					or (
-						not d.platform
-						and (
-							not d.key:match("^stage%.s3%.")
-							or m.values["stage.mode"] == "s3"
-							or (m.mode == "advanced" and not m.touched["stage.mode"])
-						)
-					)
-				)
-			then
-				keys[#keys + 1] = d.key
-			end
+	local function refresh_frontend()
+		frontend = datadoc.frontend(obs)
+		return frontend
+	end
+	local function drop_live_cache(session)
+		if session then
+			session.cache = {}
+			session.cache_ready = false
 		end
-		return keys
+		secrets.clear_cache()
+	end
+	-- Advanced mode: the quit post cannot wait for a base-file probe at shutdown, so the live session
+	-- inspects the base file as soon as it starts and keeps the custom destinations it defines.
+	local function inspect_base(session)
+		if preflight then
+			preflight.inspection.cancel()
+			preflight = nil
+		end
+		if model.mode ~= "advanced" then
+			return
+		end
+		local executable = resolver.find(model.crier_path)
+		if not executable then
+			return
+		end
+		local inspection, e = base.inspect(spawner, fs, {
+			executable = executable,
+			base_config = model.base_config,
+			cwd = model.base_config:match("^(.*)[/\\]") or ".",
+		})
+		if not inspection then
+			log.warn("Cannot inspect the base configuration: " .. e.message)
+			return
+		end
+		preflight = {
+			inspection = inspection,
+			session = session,
+			generation = session.generation,
+			revision = credential_revision,
+			path = model.base_config,
+		}
+	end
+	local function tick_preflight()
+		if not preflight then
+			return
+		end
+		local stdout, e = preflight.inspection.poll()
+		if stdout == nil then
+			return
+		end
+		local current = preflight
+		preflight = nil
+		local names, parse_error
+		if stdout == false then
+			current.inspection.cancel()
+			parse_error = e
+		else
+			names, parse_error = plans.base_custom_names(stdout)
+		end
+		local session = current.session
+		if session.generation ~= current.generation or credential_revision ~= current.revision then
+			return
+		end
+		if not names then
+			log.warn("Cannot inspect the base configuration: " .. parse_error.message)
+			return
+		end
+		session.base_custom_names = names
+		session.base_fingerprint = current.inspection.fingerprint
+		session.base_config_ready = true
+		session.base_config_path = current.path
+		log.debug("base configuration inspected for the live session: " .. #names .. " custom destinations")
 	end
 	local function resolve_live(session)
 		local target = session
 		local generation = session.generation
 		local revision = credential_revision
-		secrets.resolve(model.credential_set, secret_keys(model), function(values, e)
+		secrets.resolve(model.credential_set, builder.needs_secrets(model), function(values, e)
 			if not loaded or target.generation ~= generation or credential_revision ~= revision then
 				return
 			end
@@ -102,7 +185,19 @@ function M.new(deps)
 					log.register_secret(value)
 				end
 			end
-		end)
+		end, { remember = true })
+		inspect_base(session)
+	end
+	-- Mid-stream load: OBS's frame counter is the best estimate of how long the stream has run.
+	local function stream_uptime()
+		local output = obs.obs_frontend_get_streaming_output()
+		if not output then
+			return 0
+		end
+		local frames = obs.obs_output_get_total_frames(output)
+		obs.obs_output_release(output)
+		local fps = obs.obs_get_active_fps()
+		return fps and fps > 0 and frames / fps or 0
 	end
 	local function write_data(run, m, context)
 		local source = m.values["render.data"]
@@ -151,20 +246,28 @@ function M.new(deps)
 		end
 		return ok, e
 	end
+	-- Returns the job when the post was queued (or spawned, for the quit post), nil when it was refused.
 	local function enqueue(event, session, extra)
 		if not initialized then
 			log.error("State directory is unavailable", "state-dir")
-			return
+			return nil
 		end
 		extra = extra or {}
 		local session_generation = session and session.generation
 		local snapshot_revision = credential_revision
 		local snapshot = datadoc.copy(model)
-		local front = datadoc.frontend(obs)
+		local front = datadoc.copy(extra.cached_frontend and frontend or refresh_frontend())
+		-- Each event carries only its own file: the saved recording on recording_end, the clip on replay.
+		if event ~= "rec_end" then
+			front.recording_path = nil
+		end
+		if event ~= "replay" then
+			front.replay_path = nil
+		end
 		local ss = session and session.snapshot() or {}
 		if event == "replay" and (not front.replay_path or front.replay_path == "") then
 			log.warn("Replay post skipped: no saved clip path is available")
-			return
+			return nil
 		end
 		local count = 0
 		for _, enabled in pairs(snapshot.platforms) do
@@ -174,7 +277,7 @@ function M.new(deps)
 		end
 		if count == 0 then
 			log.warn("No platform is selected; post skipped", "no-platforms")
-			return
+			return nil
 		end
 		if
 			extra.immediate
@@ -187,21 +290,21 @@ function M.new(deps)
 			)
 		then
 			log.warn("quit post skipped: base configuration is not ready")
-			return
+			return nil
 		end
-		if extra.immediate and session and not session.cache_ready and #secret_keys(snapshot) > 0 then
+		if extra.immediate and session and not session.cache_ready and #builder.needs_secrets(snapshot) > 0 then
 			log.warn("quit post skipped: credentials are not ready")
-			return
+			return nil
 		end
 		local path, e = resolver.find(snapshot.crier_path)
 		if not path then
 			log.error(e.message, "missing-crier")
-			return
+			return nil
 		end
 		local run, re = runs.create(event)
 		if not run then
 			log.error(re.message)
-			return
+			return nil
 		end
 		local event_names = { rec_start = "recording_start", rec_end = "recording_end" }
 		local context = datadoc.build({
@@ -217,7 +320,7 @@ function M.new(deps)
 		if not data_path then
 			log.error(de.message)
 			save_result(run, { code = 1, stderr = log.scrub(de.message) })
-			return
+			return nil
 		end
 		local caption = (snapshot.triggers[event] or {}).caption or snapshot.manual_caption
 		local plan, pe = builder.build({
@@ -235,9 +338,9 @@ function M.new(deps)
 			skip_base_probe = extra.immediate == true,
 		})
 		if not plan then
-			log.error(pe.message)
+			log[pe.kind == "skipped" and "warn" or "error"](pe.message)
 			save_result(run, { code = 1, stderr = log.scrub(pe.message) })
-			return
+			return nil
 		end
 		local job = job_module.new({
 			event = event,
@@ -251,11 +354,7 @@ function M.new(deps)
 			log = log,
 			cached_secrets = extra.cached_secrets,
 			on_base_custom = function(names, fingerprint)
-				if
-					session
-					and session.generation == session_generation
-					and credential_revision == snapshot_revision
-				then
+				if session and session.generation == session_generation and credential_revision == snapshot_revision then
 					session.base_custom_names = names
 					session.base_fingerprint = fingerprint
 					session.base_config_ready = true
@@ -277,16 +376,9 @@ function M.new(deps)
 				end
 			end,
 			on_spawn = function()
-				if
-					event == "end"
-					and session
-					and session.generation == session_generation
-					and credential_revision == snapshot_revision
-				then
-					session.cache = {}
-					if secrets.clear_cache then
-						secrets.clear_cache()
-					end
+				-- The live session's credentials go once the end post has them.
+				if event == "end" then
+					drop_live_cache(nil)
 				end
 			end,
 		})
@@ -309,38 +401,10 @@ function M.new(deps)
 		if not accepted then
 			job.cancel()
 			log.warn("Post " .. event .. " " .. reason)
+			return nil
 		end
 		return job
 	end
-	local function find_binary(binary)
-		if not binary or binary == "" then
-			return nil
-		end
-		if binary:find("[/\\]") then
-			return fs.exists(binary) and binary or nil
-		end
-		local augment = env.augmented_path or env.path
-		local path = type(augment) == "function" and augment() or augment or ""
-		for dir in path:gmatch(env.os == "Windows" and "[^;]+" or "[^:]+") do
-			local full = dir .. "/" .. binary
-			if fs.exists(full) then
-				return full
-			end
-			if env.os == "Windows" and fs.exists(full .. ".exe") then
-				return full .. ".exe"
-			end
-		end
-	end
-	local ping = deps.ping
-		or require("crier_obs.run.ping").new({
-			fs = fs,
-			spawner = spawner,
-			secrets = secrets,
-			log = log,
-			env = env,
-			find_binary = find_binary,
-			runs = runs,
-		})
 	local function status()
 		local r = resolver.status()
 		local install = installer.status()
@@ -348,17 +412,23 @@ function M.new(deps)
 		if model then
 			for _, d in ipairs(descriptor.build(model.custom_names)) do
 				if d.secret then
-					local s = secrets.status(model.credential_set, d.key)
-					secret_status[d.key] = s.message or s.state or "not stored"
+					secret_status[d.key] = secrets.status(model.credential_set, d.key)
 				end
 			end
 		end
-		local backend = secrets.backend_status and secrets.backend_status()
+		local backend = secrets.backend_status()
+		local installing = install.state == "installing" or install.state == "failed" or install.state == "cancelled"
+		local crier = installing and install.message or r.message
+		local level = install.state == "failed" and "error"
+			or (not installing and (r.state == "missing" or r.state == "failed")) and "error"
+			or (not installing and r.state == "outdated") and "warning"
+			or "normal"
 		return {
-			crier = install.state == "installing" and install.message or r.message,
-			keyring = backend and backend.message or secrets.backend_name or "OS credential store",
+			crier = crier,
+			crier_level = level,
+			keyring = backend.state == "checking" and t("keyring_state", backend.label, t("checking")) or backend.label,
 			last_run = last_run,
-			logs = paths.runs,
+			logs = initialized and paths.runs or t("state_unavailable", state_error or "?"),
 			update_available = r.state == "outdated",
 			secrets = secret_status,
 			results = ping.rows(),
@@ -366,7 +436,7 @@ function M.new(deps)
 	end
 	local callbacks = {}
 	callbacks.install = function()
-		local _, e = installer.start()
+		local _, e = installer.start(model and model.crier_path or "")
 		if e then
 			log.error(e.message)
 		end
@@ -384,7 +454,7 @@ function M.new(deps)
 		return true
 	end
 	callbacks.check = function()
-		if ping.busy and ping.busy() then
+		if ping.busy() then
 			return true
 		end
 		if not initialized then
@@ -426,48 +496,55 @@ function M.new(deps)
 		ping.start(datadoc.copy(model), executable, plan)
 		return true
 	end
+	local function invalidate(key)
+		credential_revision = credential_revision + 1
+		if scheduler then
+			scheduler.stream.cache[key] = nil
+			scheduler.stream.cache_ready = false
+		end
+	end
+	-- Only a commit that is really queued touches the live session; a failed one re-resolves the stored
+	-- value, so a misclick on Save never leaves the quit post without credentials.
 	callbacks.save_secret = function(key)
 		if settings then
 			secrets.scrub(settings, nil, model.credential_set)
 		end
-		credential_revision = credential_revision + 1
-		if scheduler then
-			scheduler.stream.cache[key] = nil
-			scheduler.stream.cache_ready = false
-		end
 		local value = secrets.pending(model.credential_set, key)
-		if value and value ~= "" then
-			secrets.commit(model.credential_set, key, value, function(ok, e)
-				if not ok then
-					log.error(e.message)
-				else
-					live_recheck = true
-				end
-			end)
+		if not value or value:match("^%s*$") then
+			log.warn("Enter a credential before saving " .. key)
+			return true
 		end
+		invalidate(key)
+		secrets.commit(model.credential_set, key, value, function(ok, e)
+			if not ok then
+				log.error(e.message)
+			end
+			live_recheck = true
+		end)
 		return true
 	end
 	callbacks.forget_secret = function(key)
-		credential_revision = credential_revision + 1
-		if scheduler then
-			scheduler.stream.cache[key] = nil
-			scheduler.stream.cache_ready = false
-		end
+		invalidate(key)
 		secrets.forget(model.credential_set, key, function(ok, e)
 			if not ok then
 				log.error(e.message)
-			else
-				live_recheck = true
 			end
+			live_recheck = true
 		end)
 		return true
 	end
 	callbacks.forget_all = function()
-		for _, d in ipairs(descriptor.build(model.custom_names)) do
-			if d.secret then
-				callbacks.forget_secret(d.key)
-			end
+		credential_revision = credential_revision + 1
+		if scheduler then
+			scheduler.stream.cache = {}
+			scheduler.stream.cache_ready = false
 		end
+		secrets.forget_all(model.credential_set, function(ok, e)
+			if not ok then
+				log.error(e.message)
+			end
+			live_recheck = true
+		end)
 		return true
 	end
 	local properties = deps.properties
@@ -478,75 +555,116 @@ function M.new(deps)
 			callbacks = callbacks,
 			status = status,
 		})
+	local function log_resolver(r)
+		local id = r.state .. "\0" .. tostring(r.path) .. "\0" .. tostring(r.version)
+		if id == logged_resolver or r.state == "checking" then
+			return
+		end
+		logged_resolver = id
+		if r.state == "ready" then
+			log.info(r.message)
+		elseif r.state == "outdated" then
+			log.warn(
+				"crier " .. r.version .. " at " .. r.path .. " is older than " .. version.CRIER_VERSION .. "; click Update crier",
+				"outdated:" .. r.path .. ":" .. r.version,
+				math.huge
+			)
+		elseif r.state == "missing" then
+			log.warn(r.message .. "; click Install crier", "crier-status")
+		elseif r.state == "failed" then
+			log.warn("crier check failed: " .. r.message)
+		end
+	end
+	local function poll_adopted()
+		for i = #adopted, 1, -1 do
+			local item = adopted[i]
+			local result, err = item.process.poll()
+			local record = item.record
+			local lost = not result
+				and not err
+				and record.event ~= "drainer"
+				and record.created_at
+				and clock.now_wall() - record.created_at > (model.timeout + M.ADOPTION_GRACE)
+			if result or err or lost then
+				local journal = record.journal
+					and {
+						event = record.event,
+						created_at = record.created_at,
+						journal = record.journal,
+						status = record.status_path,
+						pid = record.pid_path,
+					}
+				if result and record.event ~= "drainer" then
+					last_run = t("last_run_code", result.code)
+					log.info("Adopted " .. tostring(record.event) .. " post finished with code " .. result.code)
+					if journal then
+						runs.journal(journal, { state = result.code == 0 and "done" or "failed", pid = record.pid })
+					end
+				elseif err then
+					item.process.cancel()
+					log.warn(err.message)
+				elseif lost then
+					log.warn("Adopted " .. tostring(record.event) .. " post stopped reporting; its result is unknown")
+					if journal then
+						runs.journal(journal, { state = "failed", pid = record.pid, error = "Run stopped reporting" })
+					end
+				end
+				table.remove(adopted, i)
+			end
+		end
+	end
+	local function heartbeat()
+		secrets.tick()
+		for _, record in ipairs(spawner.reap()) do
+			if record.run then
+				runs.journal(record.run, { state = "failed", pid = record.pid })
+			end
+		end
+		log_resolver(resolver.tick())
+		installer.tick()
+		ping.tick()
+		if recheck then
+			recheck = false
+			if resolver.status().state ~= "checking" then
+				resolver.probe(model.crier_path)
+			end
+		end
+		if live_recheck then
+			live_recheck = false
+			if scheduler.stream.live then
+				resolve_live(scheduler.stream)
+			end
+		end
+		tick_preflight()
+		scheduler.tick()
+		queue.tick()
+		poll_adopted()
+	end
 	local function tick()
 		if not loaded then
 			return
 		end
-		local ok, e = pcall(function()
-			secrets.tick()
-			if spawner.reap then
-				for _, record in ipairs(spawner.reap()) do
-					if record.run then
-						runs.journal(record.run, { state = "failed", pid = record.pid })
-					end
-				end
-			end
-			resolver.tick()
-			installer.tick()
-			ping.tick()
-			if recheck then
-				recheck = false
-				if resolver.status().state ~= "checking" then
-					resolver.probe(model.crier_path)
-				end
-			end
-			if live_recheck then
-				live_recheck = false
-				if scheduler.stream.live then
-					resolve_live(scheduler.stream)
-				end
-			end
-			scheduler.tick()
-			queue.tick()
-			for i = #adopted, 1, -1 do
-				local item = adopted[i]
-				local result, err = item.process.poll()
-				if result or err then
-					if result and item.record.event ~= "drainer" then
-						last_run = "Last run finished with code " .. result.code
-						log.info(last_run)
-						if item.record.journal then
-							runs.journal({
-								event = item.record.event,
-								created_at = item.record.created_at,
-								journal = item.record.journal,
-								status = item.record.status_path,
-								pid = item.record.pid_path,
-							}, { state = result.code == 0 and "done" or "failed", pid = item.record.pid })
-						end
-					elseif err then
-						if item.process.cancel then
-							item.process.cancel()
-						else
-							item.process.terminate()
-							item.process.detach()
-						end
-						log.warn(err.message)
-					end
-					table.remove(adopted, i)
-				end
-			end
-		end)
+		local ok, e = pcall(heartbeat)
 		if not ok then
 			log.error(tostring(e), "heartbeat-error")
 		end
 	end
 	local function frontend_event(event)
 		local ok, e = pcall(function()
+			refresh_frontend()
 			scheduler.event(event)
 		end)
 		if not ok then
 			log.error(tostring(e), "frontend-error")
+		end
+	end
+	local function log_inherited()
+		local names = env.crier_names()
+		if #names > 0 then
+			log.debug(
+				"inherited CRIER_* variables are removed before crier runs (the dialog and the credential store win): "
+					.. table.concat(names, ", ")
+			)
 		end
 	end
 	function self.defaults(data)
@@ -557,22 +675,30 @@ function M.new(deps)
 			self.unload()
 		end
 		settings = data
-		if obs.obs_data_addref then
-			obs.obs_data_addref(settings)
-		end
+		obs.obs_data_addref(settings)
 		model = model_port.snapshot(data)
-		if log.set_debug then
-			log.set_debug(model.debug)
-		end
+		log.set_debug(model.debug)
 		loaded = true
+		log.info("crier-obs " .. version.VERSION .. " for crier " .. version.CRIER_VERSION .. "; state in " .. paths.root)
+		log_inherited()
+		local sandbox = env.sandbox_status(fs)
+		if sandbox.kind ~= "native" then
+			log.warn(sandbox.message, "sandbox", math.huge)
+		end
 		local ok, e = runs.init()
 		initialized = ok == true
+		state_error = e and e.message
 		if not ok then
 			log.error(e.message)
 		end
-		spool = require("crier_obs.run.spool").new({
+		refresh_frontend()
+		local spool = require("crier_obs.run.spool").new({
 			fs = fs,
 			paths = paths,
+			clock = clock,
+			log = log,
+			pid = spawner.current_pid(),
+			alive = spawner.alive,
 			hydrate = function(entry, ack)
 				return job_module.new({
 					event = entry.event,
@@ -601,6 +727,10 @@ function M.new(deps)
 				if job.result then
 					last_run = job.result.message
 				end
+				-- An end post that never reached crier still ends the live session's credentials.
+				if job.event == "end" and not job.spawned then
+					drop_live_cache(nil)
+				end
 				runs.sweep(model.retention_days, model.retention_count)
 			end,
 		})
@@ -612,12 +742,18 @@ function M.new(deps)
 			log = log,
 			drop_intervals = queue.drop_intervals,
 			resolve_live = resolve_live,
+			stream_uptime = stream_uptime,
+			on_stream_end = function()
+				drop_live_cache(nil)
+			end,
 		})
 		if initialized then
+			local found = 0
 			for _, record in ipairs(runs.adopt()) do
 				local p, ae = spawner.adopt(record)
 				if p then
 					adopted[#adopted + 1] = { process = p, record = record }
+					found = found + (record.event == "drainer" and 0 or 1)
 				else
 					log.warn(ae.message)
 				end
@@ -627,6 +763,9 @@ function M.new(deps)
 						adopted[#adopted + 1] = { process = dp, record = { event = "drainer", pid = drainer.pid } }
 					end
 				end
+			end
+			if found > 0 then
+				log.info("Adopted " .. found .. " detached post" .. (found == 1 and "" or "s") .. " from an earlier load")
 			end
 			runs.sweep(model.retention_days, model.retention_count)
 		end
@@ -639,19 +778,21 @@ function M.new(deps)
 	end
 	function self.update(data)
 		local next_model = model_port.snapshot(data)
-		if log.set_debug then
-			log.set_debug(next_model.debug)
+		local changes = models.diff(model, next_model)
+		log.set_debug(next_model.debug)
+		if model and changes.debug and next_model.debug then
+			log_inherited()
 		end
-		if model and next_model.crier_path ~= model.crier_path then
+		if model and changes.crier_path ~= nil then
 			recheck = true
 		end
 		if
 			model
 			and (
-				not require("crier_obs.settings.model").equal(model.platforms, next_model.platforms)
-				or model.credential_set ~= next_model.credential_set
-				or model.base_config ~= next_model.base_config
-				or model.mode ~= next_model.mode
+				changes.platforms ~= nil
+				or changes.credential_set ~= nil
+				or changes.base_config ~= nil
+				or changes.mode ~= nil
 			)
 		then
 			live_recheck = true
@@ -662,6 +803,7 @@ function M.new(deps)
 			end
 		end
 		model = next_model
+		refresh_frontend()
 		if scheduler then
 			scheduler.update(model)
 		end
@@ -676,31 +818,35 @@ function M.new(deps)
 		if not loaded then
 			return
 		end
+		-- An unload with no SCRIPTING_SHUTDOWN and no scene-collection switch before it is OBS ending.
+		scheduler.unload()
 		loaded = false
 		obs.timer_remove(tick)
 		obs.obs_frontend_remove_event_callback(frontend_event)
-		local _, e = queue.detach()
+		local records, e = queue.detach({ skip = scheduler.closing() and QUIT_SKIP or nil })
 		if e then
 			log.error(e.message)
+		end
+		if records and #records > 0 then
+			log.info("Detached " .. #records .. " running post" .. (#records == 1 and "" or "s") .. "; the next load adopts them")
 		end
 		for _, item in ipairs(adopted) do
 			item.process.detach()
 		end
 		adopted = {}
+		if preflight then
+			preflight.inspection.cancel()
+			preflight = nil
+		end
 		ping.detach()
 		installer.detach()
 		resolver.detach()
 		if settings then
 			secrets.scrub(settings, nil, model.credential_set)
 		end
-		if secrets.close then
-			secrets.close()
-		elseif secrets.unload then
-			secrets.unload()
-		elseif secrets.detach then
-			secrets.detach()
-		end
-		if settings and obs.obs_data_release then
+		secrets.close()
+		log.clear_secrets()
+		if settings then
 			obs.obs_data_release(settings)
 		end
 		settings = nil

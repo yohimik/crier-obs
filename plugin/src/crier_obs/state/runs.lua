@@ -1,12 +1,11 @@
-local ffi = require("ffi")
 local json = require("crier_obs.json")
 local M = {}
-ffi.cdef("int getpid(void); uint32_t __stdcall GetCurrentProcessId(void);")
 function M.new(deps)
 	local fs, clock, paths = deps.fs, deps.clock, deps.paths
 	local seq = 0
-	local owner = deps.pid
-		or (ffi.os ~= "Windows" and tonumber(ffi.C.getpid()) or tonumber(ffi.C.GetCurrentProcessId()))
+	local owner = assert(deps.pid, "runs need the OBS process id")
+	-- Journals carry the boot they were written in; a pid from another boot names some other process.
+	local boot = deps.boot_id
 	local self = {}
 	local function write_json(path, value)
 		local text, e = json.encode(value)
@@ -73,6 +72,8 @@ function M.new(deps)
 			pid_path = run.pid,
 			drainers = record.drainers,
 			job_name = record.job_name,
+			boot_id = boot,
+			error = record.error,
 		}
 		return write_json(run.journal, value)
 	end
@@ -119,11 +120,18 @@ function M.new(deps)
 				and (rec.state == "running" or rec.state == "detached" or rec.state == "adopted")
 				and rec.pid
 			then
-				rec.status_path = dir .. "/status"
-				rec.pid_path = dir .. "/pid"
-				rec.dir = dir
-				rec.journal = dir .. "/journal.json"
-				out[#out + 1] = rec
+				if rec.boot_id and boot and rec.boot_id ~= boot then
+					-- Written before a reboot: the process is gone and its exit code with it.
+					rec.state, rec.error = "failed", "OBS or the computer restarted while this run was detached; its result is unknown"
+					rec.drainers = nil
+					write_json(dir .. "/journal.json", rec)
+				else
+					rec.status_path = dir .. "/status"
+					rec.pid_path = dir .. "/pid"
+					rec.dir = dir
+					rec.journal = dir .. "/journal.json"
+					out[#out + 1] = rec
+				end
 			end
 		end
 		return out
@@ -136,9 +144,7 @@ function M.new(deps)
 				fs.remove(file)
 			end
 		end
-		if fs.rmdir then
-			fs.rmdir(path)
-		end
+		fs.rmdir(path)
 	end
 	function self.sweep(days, count)
 		local completed = {}

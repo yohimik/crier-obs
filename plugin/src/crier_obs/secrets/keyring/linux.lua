@@ -21,6 +21,10 @@ function M.new(deps)
       callback(value)
     end)
   end
+  -- secret-tool has no presence query that withholds the secret, so the value is read and dropped.
+  function self.exists(account, callback)
+    self.lookup(account, function(value, err) callback(value and true or nil, err) end)
+  end
   function self.forget(account, callback)
     run({'clear', 'service', 'crier-obs', 'account', account}, nil, function(result, err)
       local failure = cli.failure(result, err, 1)

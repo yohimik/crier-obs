@@ -7,13 +7,18 @@ function M.new(deps)
   local executable = deps.security_bin or '/usr/bin/security'
   function self.store(account, value, callback)
     local hex = value:gsub('.', function(c) return string.format('%02x', c:byte()) end)
-    commands.run(executable,
-       {'-i'},
-       'add-generic-password -U -a ' .. quote(account) .. ' -s crier-obs -X ' .. hex .. '\n',
-       function(result,
-       err)
+    local command = 'add-generic-password -U -a ' .. quote(account) .. ' -s crier-obs -X ' .. hex .. '\n'
+    commands.run(executable, {'-i'}, command, function(result, err)
       local failure = cli.failure(result, err)
       callback(not failure, failure)
+    end)
+  end
+  -- Without -w, security prints the item's attributes and never the password.
+  function self.exists(account, callback)
+    commands.run(executable, {'find-generic-password', '-s', 'crier-obs', '-a', account}, nil, function(result, err)
+      local failure = cli.failure(result, err, 44)
+      if failure then callback(nil, failure); return end
+      callback(true)
     end)
   end
   function self.lookup(account, callback)

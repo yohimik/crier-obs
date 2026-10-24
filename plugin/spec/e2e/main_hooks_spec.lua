@@ -24,6 +24,11 @@ describe("OBS entry points #posix", function()
 			scrub = function(data)
 				obs.obs_data_unset_user_value(data, "publish.telegram.token")
 			end,
+			backend_status = function()
+				return { state = "ready", label = "test store" }
+			end,
+			clear_cache = function() end,
+			pending = function() end,
 			close = function() end,
 		}
 		package.loaded["crier_obs.secrets.service"] = {
@@ -66,5 +71,25 @@ describe("OBS entry points #posix", function()
 		obs.obs_data_release(data)
 		obs.assert_no_leaks()
 		assert.is_true(ok, message)
+	end)
+end)
+describe("spec environment", function()
+	it("runs every crier_obs chunk with OBS's error and print hooks, from the bundle when asked", function()
+		obs.reset()
+		local plugin = require("crier_obs.plugin")
+		local environment = getfenv(plugin.new)
+		assert.is_nil(environment.error("hooked failure"))
+		environment.print("hooked", 1)
+		assert.same({ level = obs.LOG_ERROR, text = "hooked failure" }, obs.logs[1])
+		assert.same({ level = obs.LOG_INFO, text = "hooked\t1" }, obs.logs[2])
+		assert.is_not.equal(_G.error, environment.error)
+		local source = debug.getinfo(plugin.new, "S").source
+		local bundle = os.getenv("CRIER_OBS_E2E_BUNDLE")
+		if bundle and bundle ~= "" then
+			assert.equal("@" .. bundle, source)
+		else
+			assert.matches("src/crier_obs/plugin%.lua$", source)
+		end
+		assert.matches("^/tmp/crier%-obs%-spec%-%d+/", os.tmpname())
 	end)
 end)

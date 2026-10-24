@@ -93,6 +93,8 @@ local function memory_fs()
     remove = function(path) files[path] = nil; return true end,
     glob = function() return dirs end}
 end
+local clock = {now_wall = function() return 1000 end}
+local function dead() return false end
 local function snapshot(dir, event)
   return {event = event or 'start', credential_set = 'original', run = {dir = dir},
     plan = {executable = '/crier', needs_secrets = {}, args = {'--config', dir .. '/config.json'}, env = {},
@@ -102,7 +104,8 @@ describe('durable queue snapshots', function()
   it('restores snapshots without mutable settings, rejects credentials, and cleans terminal records', function()
     local fs = memory_fs(); fs.dirs[1], fs.dirs[2], fs.dirs[3] = '/runs/10-1-1', '/runs/10-1-2', '/runs/10-99-1'
     local function hydrate(entry, ack) return {event = entry.event, restored = entry, start = ack} end
-    local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1, hydrate = hydrate, owner_alive = function(pid) return pid == 99 end}
+    local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1, hydrate = hydrate, clock = clock,
+      alive = function(pid) return pid == 99 end}
     local spool = spool_module.new(deps)
     for i = 1, 3 do assert(spool.append{spill = snapshot(fs.dirs[i])}) end
     assert.equal(3, spool.size())
@@ -125,32 +128,34 @@ describe('durable queue snapshots', function()
     spool = spool_module.new(deps); assert.equal(0, spool.size()); assert.is_nil(fs.files['/runs/10-1-2/queued.json'])
     assert.is_not_nil(fs.files['/runs/10-99-1/queued.json'])
   end)
-  it('does not steal a live owner and recovers dead owners on POSIX and Windows', function()
-    for _, platform in ipairs({'OSX', 'Windows'}) do
-      local fs = memory_fs(); fs.dirs[1] = '/runs/10-99-1'
-      local path = fs.dirs[1] .. '/queued.json'; fs.files[path] = json.encode(snapshot(fs.dirs[1]))
-      local running, closed = true, 0
-      local C = {kill = function() return running and 0 or -1 end,
-        OpenProcess = function() return require('ffi').cast('void*', 123) end,
-        GetExitCodeProcess = function(_, out) out[0] = running and 259 or 0; return 1 end,
-        CloseHandle = function() closed = closed + 1 end}
-      local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1, C = C, platform = platform,
-        hydrate = function(entry) return {event = entry.event} end}
-      assert.equal(0, spool_module.new(deps).size()); running = false
-      assert.equal(1, spool_module.new(deps).size())
-      if platform == 'Windows' then
-        assert.equal(2, closed)
-        C.OpenProcess = function() return require('ffi').NULL end
-        C.GetLastError = function() return 5 end
-        assert.equal(0, spool_module.new(deps).size())
-        C.GetLastError = function() return 87 end
-        assert.equal(1, spool_module.new(deps).size())
-      end
-    end
+  it('leaves another live OBS alone and never publishes posts of an OBS session that has ended', function()
+    local fs = memory_fs(); fs.dirs[1], fs.dirs[2] = '/runs/10-99-1', '/runs/10-1-1'
+    local entry = snapshot(fs.dirs[1]); entry.spilled_at = 1000
+    fs.files[fs.dirs[1] .. '/queued.json'] = json.encode(entry)
+    fs.files[fs.dirs[1] .. '/journal.json'] = '{"state":"queued","event":"start"}'
+    local own = snapshot(fs.dirs[2]); own.spilled_at = 1000 - 601
+    fs.files[fs.dirs[2] .. '/queued.json'] = json.encode(own)
+    local running = true
+    local lines = {}
+    local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1, clock = clock, alive = function() return running end,
+      log = {info = function(text) lines[#lines + 1] = text end},
+      hydrate = function(item) return {event = item.event} end}
+    -- Our own snapshot is older than a collection switch takes: skipped, not restored.
+    assert.equal(0, spool_module.new(deps).size())
+    assert.is_nil(fs.files['/runs/10-1-1/queued.json'])
+    assert.matches('waited longer', json.decode(fs.files['/runs/10-1-1/journal.json']).error, 1, true)
+    assert.is_not_nil(fs.files['/runs/10-99-1/queued.json'])
+    running = false
+    assert.equal(0, spool_module.new(deps).size())
+    assert.is_nil(fs.files['/runs/10-99-1/queued.json'])
+    local journal = json.decode(fs.files['/runs/10-99-1/journal.json'])
+    assert.equal('failed', journal.state); assert.matches('session that queued it has ended', journal.error, 1, true)
+    assert.same({'Skipped 1 queued post from an earlier OBS session', 'Skipped 1 queued post from an earlier OBS session'}, lines)
   end)
   it('rejects malformed durable data and reports serialization/read failures', function()
     local fs = memory_fs()
-    local spool = spool_module.new{fs = fs, paths = {runs = '/runs'}, pid = 1, hydrate = function() end}
+    local spool = spool_module.new{fs = fs, paths = {runs = '/runs'}, pid = 1, clock = clock, alive = dead,
+      hydrate = function() end}
     local mutations = {
       function(e) e.run.dir = nil end,
       function(e) e.plan.executable = '' end,
@@ -183,12 +188,10 @@ describe('durable queue snapshots', function()
       return old_read(path)
     end
     local value; value, err = spool.take(); assert.is_nil(value); assert.equal('filesystem', err.kind)
-    local win = spool_module.new{fs = memory_fs(), paths = {runs = '/runs'}, platform = 'Windows',
-      C = {GetCurrentProcessId = function() return 7 end}, hydrate = function() end}
-    assert.equal(0, win.size())
+    assert.has_error(function() spool_module.new{fs = memory_fs(), paths = {runs = '/runs'}, hydrate = function() end} end)
   end)
   it('fails missing/corrupt snapshots explicitly and refuses failed hydration', function()
-    local fs = memory_fs(); local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1,
+    local fs = memory_fs(); local deps = {fs = fs, paths = {runs = '/runs'}, pid = 1, clock = clock, alive = dead,
       hydrate = function() return nil, {message = 'hydrate failed'} end}
     local spool = spool_module.new(deps); assert(spool.append{spill = snapshot('/runs/10-1-1')})
     fs.files['/runs/10-1-1/queued.json'] = 'invalid'
@@ -212,7 +215,7 @@ describe('parking queued preflight and credential operations', function()
       local j = job_module.new{event = 'start', plan = plan, run = {}, credential_set = 'default',
         fs = {read = function() return '{}' end, write = function() return true end},
         runs = {journal = function(_, value) journal = value; return true end, finish = function() finished = finished + 1 end},
-        log = {scrub = function(v) return v end, error = function() end},
+        log = {scrub = function(v) return v end, error = function() end, debug = function() end},
         secrets = {resolve = function(_, _, cb) callback = cb end},
         spawner = {spawn = function()
           spawned = spawned + 1
