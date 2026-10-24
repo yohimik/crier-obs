@@ -4,13 +4,10 @@ local fs_module = require("crier_obs.ports.fs")
 local spawner_module = require("crier_obs.proc.spawner")
 local resolver_module = require("crier_obs.proc.resolver")
 local installer_module = require("crier_obs.invoke.installer")
-ffi.cdef(
-	"int setenv(const char*,const char*,int); int unsetenv(const char*); char* getcwd(char*,unsigned long); int usleep(unsigned int);"
-)
+ffi.cdef("int setenv(const char*,const char*,int); int unsetenv(const char*); int usleep(unsigned int);")
 describe("official installer integration #posix", function()
 	it("runs the pinned installer through a local curl URL and refreshes discovery after success", function()
-		local current = ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
-		local fakes = current .. (current:match("/plugin$") and "/spec/fakes" or "/plugin/spec/fakes")
+		local fakes = require("fakes.paths").dir
 		local state = os.tmpname()
 		os.remove(state)
 		local fs = fs_module.new({ obs = obs })

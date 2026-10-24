@@ -1,16 +1,13 @@
 local ffi = require("ffi")
 local obs = require("obslua")
-ffi.cdef(
-	"int setenv(const char*,const char*,int); int unsetenv(const char*); char* getcwd(char*,unsigned long); int usleep(unsigned int);"
-)
+ffi.cdef("int setenv(const char*,const char*,int); int unsetenv(const char*); int usleep(unsigned int);")
 describe("OBS entry points #posix", function()
 	it("loads the source entry under OBS error/print hooks, then releases callbacks and borrowed settings", function()
 		obs.reset()
 		local state = os.tmpname()
 		os.remove(state)
 		ffi.C.setenv("CRIER_OBS_STATE_DIR", state, 1)
-		local current = ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
-		local fake = current .. (current:match("/plugin$") and "/spec/fakes/crier" or "/plugin/spec/fakes/crier")
+		local fake = require("fakes.paths").crier
 		local oldservice, oldmain = package.loaded["crier_obs.secrets.service"], package.loaded["crier_obs.main"]
 		local olderror, oldprint = _G.error, _G.print
 		local secret = {

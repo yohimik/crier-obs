@@ -6,7 +6,7 @@ local posix = require("crier_obs.proc.posix")
 local spawner = require("crier_obs.proc.spawner")
 local resolver = require("crier_obs.proc.resolver")
 local host_env = require("crier_obs.ports.env").new({})
-ffi.cdef([[int usleep(unsigned int); char *getcwd(char*,unsigned long);
+ffi.cdef([[int usleep(unsigned int);
 int open(const char*,int,...); int mkdir(const char*,unsigned int); int rmdir(const char*); int kill(int,int);]])
 local function wait(p)
 	for _ = 1, 2000 do
@@ -50,9 +50,7 @@ local fs = {
 		return false
 	end,
 }
-local cwd = ffi.os == "Windows" and "." or ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
-local fake_path = fs.exists(cwd .. "/plugin/spec/fakes/crier") and cwd .. "/plugin/spec/fakes/crier"
-	or cwd .. "/spec/fakes/crier"
+local fake_path = require("fakes.paths").crier
 describe("UTF-16 and Windows command construction", function()
 	it("round-trips Unicode including non-BMP captions and rejects malformed encodings", function()
 		local text = "Live 🔴 привет 日本語"

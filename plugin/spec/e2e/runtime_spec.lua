@@ -3,15 +3,9 @@ local obs = require("obslua")
 local json = require("crier_obs.json")
 local plugin_module = require("crier_obs.plugin")
 local fs_module = require("crier_obs.ports.fs")
-ffi.cdef(
-	[[int usleep(unsigned int); char *getcwd(char*,unsigned long); int setenv(const char*,const char*,int); int unsetenv(const char*);
-int pipe(int[2]); int socket(int,int,int); int fcntl(int,int,...); int close(int); int kill(int,int);]]
-)
-local function cwd()
-	return ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
-end
-local root = ffi.os == "Windows" and "." or cwd()
-local fake = root .. (root:match("/plugin$") and "/spec/fakes/crier" or "/plugin/spec/fakes/crier")
+ffi.cdef([[int usleep(unsigned int); int setenv(const char*,const char*,int); int unsetenv(const char*);
+int pipe(int[2]); int socket(int,int,int); int fcntl(int,int,...); int close(int); int kill(int,int);]])
+local fake = require("fakes.paths").crier
 local function fake_secrets()
 	local tasks = {}
 	local s = {}
