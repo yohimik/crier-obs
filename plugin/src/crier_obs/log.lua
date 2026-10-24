@@ -163,6 +163,11 @@ function M.new(deps)
 		return s
 	end
 	local function emit(level, msg, key, seconds)
+		-- Debug lines are dropped before any work while Debug logging is off: many come from the
+		-- heartbeat on OBS's graphics thread, and each would cost a scrub.
+		if level == "debug" and not deps.debug then
+			return false
+		end
 		local now = deps.clock and deps.clock.now_mono() or os.time()
 		if key and last[key] and now - last[key] < (seconds or 30) then
 			return false
@@ -172,14 +177,14 @@ function M.new(deps)
 		end
 		local obs = deps.obs
 		if obs and obs.script_log then
-			local text = "crier-obs: " .. self.scrub(msg)
+			local prefix = "crier-obs: "
 			local severity = level == "warn" and "LOG_WARNING" or "LOG_" .. level:upper()
 			-- OBS drops LOG_DEBUG lines unless it runs with --verbose, so the Debug logging setting
 			-- raises the plugin's debug lines to LOG_INFO, marked as such.
-			if level == "debug" and deps.debug then
-				severity, text = "LOG_INFO", "crier-obs: [debug] " .. self.scrub(msg)
+			if level == "debug" then
+				severity, prefix = "LOG_INFO", "crier-obs: [debug] "
 			end
-			obs.script_log(obs[severity] or 200, text)
+			obs.script_log(obs[severity] or 200, prefix .. self.scrub(msg))
 		end
 		return true
 	end

@@ -97,6 +97,36 @@ describe("errors and translated messages", function()
 end)
 
 describe("secret scrubbing and rate limiting", function()
+	it("drops a debug line before scrubbing it while Debug logging is off", function()
+		local lines = {}
+		local log = logger.new({
+			obs = {
+				LOG_DEBUG = 400,
+				LOG_INFO = 300,
+				script_log = function(level, text)
+					lines[#lines + 1] = { level, text }
+				end,
+			},
+		})
+		local scrubbed, scrub = 0, log.scrub
+		log.scrub = function(v)
+			scrubbed = scrubbed + 1
+			return scrub(v)
+		end
+		log.register_secret("HEARTBEAT_SECRET")
+		local emitted = log.debug("spawning keyring: HEARTBEAT_SECRET")
+		assert.equal(0, scrubbed)
+		assert.same({}, lines)
+		assert.is_false(emitted)
+		log.set_debug(true)
+		assert.is_true(log.debug("spawning keyring: HEARTBEAT_SECRET"))
+		assert.equal(1, scrubbed)
+		assert.same({ { 300, "crier-obs: [debug] spawning keyring: ***" } }, lines)
+		log.set_debug(false)
+		assert.is_true(log.info("plain HEARTBEAT_SECRET"))
+		assert.equal(2, scrubbed)
+		assert.same({ 300, "crier-obs: plain ***" }, lines[2])
+	end)
 	it("scrubs literal secrets and credential-shaped URLs on all levels", function()
 		local now = 0
 		local log = logger.new({
@@ -137,10 +167,11 @@ describe("secret scrubbing and rate limiting", function()
 		assert.equal("***", assert(json.decode(unknown)).token)
 		assert.equal('{"token":"***"', log.scrub('{"token":"unterminated'))
 		-- OBS shows LOG_DEBUG only with --verbose: the Debug logging setting lifts debug lines to
-		-- LOG_INFO with a [debug] marker; without it they stay at LOG_DEBUG.
+		-- LOG_INFO with a [debug] marker; without it they are dropped.
 		local debug_log = logger.new({ obs = obs })
-		assert.is_true(debug_log.debug("quiet line"))
-		assert.same({ level = obs.LOG_DEBUG, text = "crier-obs: quiet line" }, obs.logs[#obs.logs])
+		local before = #obs.logs
+		assert.is_false(debug_log.debug("quiet line"))
+		assert.equal(before, #obs.logs)
 		debug_log.set_debug(true)
 		assert.is_true(debug_log.debug_enabled())
 		assert.is_true(debug_log.debug("visible line"))
@@ -148,8 +179,8 @@ describe("secret scrubbing and rate limiting", function()
 		debug_log.info("plain info")
 		assert.same({ level = obs.LOG_INFO, text = "crier-obs: plain info" }, obs.logs[#obs.logs])
 		debug_log.set_debug(false)
-		assert.is_true(debug_log.debug("quiet again"))
-		assert.same({ level = obs.LOG_DEBUG, text = "crier-obs: quiet again" }, obs.logs[#obs.logs])
+		assert.is_false(debug_log.debug("quiet again"))
+		assert.same({ level = obs.LOG_INFO, text = "crier-obs: plain info" }, obs.logs[#obs.logs])
 		log.register_secret("a/b?c d")
 		assert.equal(
 			"https://example.test/***?other=***",
@@ -162,7 +193,8 @@ describe("secret scrubbing and rate limiting", function()
 		assert.equal('{"error":"***"}', log.scrub('{"error":"\\u003c\\u0026\\u003e\\u2028\\u2029"}'))
 		log.clear_secrets()
 		assert.equal("secret", log.scrub("secret"))
-		assert.is_true(logger.new({}).debug("x"))
+		assert.is_true(logger.new({}).info("x"))
+		assert.is_true(logger.new({ debug = true }).debug("x"))
 	end)
 end)
 

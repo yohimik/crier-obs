@@ -49,4 +49,4 @@ In Flatpak, crier runs through `flatpak-spawn --host`. The environment goes thro
 
 A post that runs past its timeout is stopped. On macOS and Linux, crier gets a terminate request first, then a kill 10 seconds later. On Windows, the post's job object is terminated at once, with crier and every process it started.
 
-**Debug logging** adds state transitions, scheduler decisions and process metadata to OBS's log, as `[debug]` lines at info level. Without it, those lines are debug level, which OBS drops unless it runs with `--verbose`. It never records credential values.
+**Debug logging** adds state transitions, scheduler decisions and process metadata to OBS's log, as `[debug]` lines at info level. Without it, the script does not write those lines at all, even when OBS runs with `--verbose`. It never records credential values.
