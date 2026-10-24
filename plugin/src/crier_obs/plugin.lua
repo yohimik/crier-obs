@@ -87,8 +87,10 @@ function M.new(deps)
 	local last_run = t("no_posts")
 	local recheck = false
 	local logged_resolver
-	-- Frontend context read on the UI thread (events, script_update, buttons); posts the heartbeat
-	-- builds on the graphics thread use this copy instead of calling the frontend getters there.
+	-- Frontend context read on the UI thread: at load, on every frontend event and for each post the UI
+	-- thread enqueues (buttons, event triggers). Posts the heartbeat builds on the graphics thread use
+	-- this copy instead of calling the frontend getters there. script_update never reads it: OBS calls
+	-- it on every keystroke, and each getter returns a string OBS allocates for the caller.
 	local frontend = {}
 	local preflight
 	local self = { paths = paths, spawner = spawner, secrets = secrets, resolver = resolver, runs = runs }
@@ -838,7 +840,6 @@ function M.new(deps)
 			release_unused(model, next_model)
 		end
 		model = next_model
-		refresh_frontend()
 		if scheduler then
 			scheduler.update(model)
 		end

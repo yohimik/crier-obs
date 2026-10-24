@@ -566,4 +566,62 @@ describe("dialog actions and recovery", function()
 		end
 		finish(p, data)
 	end)
+	it("reads no frontend getter on update, while events and buttons keep the post snapshot fresh", function()
+		local p, data, state = fixture()
+		local calls, originals = {}, {}
+		for _, name in ipairs({
+			"obs_frontend_get_current_scene",
+			"obs_frontend_get_current_profile",
+			"obs_frontend_get_current_scene_collection",
+			"obs_frontend_get_last_recording",
+			"obs_frontend_get_last_replay",
+			"obs_frontend_get_streaming_service",
+		}) do
+			originals[name] = obs[name]
+			obs[name] = function(...)
+				calls[#calls + 1] = name
+				return originals[name](...)
+			end
+		end
+		finally(function()
+			for name, fn in pairs(originals) do
+				obs[name] = fn
+			end
+			obs.scene_name, obs.profile_name = "Scene", "Profile"
+		end)
+		local function doc(event)
+			for path, text in pairs(state.files) do
+				local decoded = path:match("/data%.json$") and json.decode(text)
+				if type(decoded) == "table" and decoded.event == event then
+					return decoded
+				end
+			end
+		end
+		-- OBS calls script_update on every keystroke, and each getter returns a string OBS allocates.
+		for _, title in ipairs({ "L", "Li", "Live" }) do
+			obs.obs_data_set_string(data, "cobs.title", title)
+			p.update(data)
+		end
+		assert.same({}, calls)
+		obs.profile_name = "Evening"
+		p.callbacks.post()
+		assert.is_true(#calls > 0)
+		assert.equal("Evening", doc("manual").profile)
+		assert.equal("Live", doc("manual").title)
+		-- The interval post runs on the graphics thread from the copy the last frontend event took.
+		obs.obs_data_set_bool(data, "cobs.trigger.interval.enabled", true)
+		obs.obs_data_set_int(data, "cobs.interval_minutes", 1)
+		p.update(data)
+		obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED)
+		obs.scene_name = "Gameplay"
+		obs.emit(obs.OBS_FRONTEND_EVENT_SCENE_CHANGED)
+		local before = #calls
+		obs.obs_data_set_string(data, "cobs.title", "Live again")
+		p.update(data)
+		obs.advance(61)
+		assert.equal(before, #calls)
+		assert.equal("Gameplay", doc("interval").scene)
+		assert.equal("Evening", doc("interval").profile)
+		finish(p, data)
+	end)
 end)
