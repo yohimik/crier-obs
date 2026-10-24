@@ -1,10 +1,34 @@
 local cli = require("crier_obs.secrets.keyring.cli")
+local i18n = require("crier_obs.i18n")
 local M = {}
+-- posix_spawnp would look a bare secret-tool up on OBS's own PATH, which lacks the shell-profile and
+-- Homebrew directories when OBS starts from a desktop launcher. The resolver's find_binary searches
+-- the augmented PATH that crier and ffmpeg discovery use, and the spawn gets the absolute path it
+-- returns. In Flatpak the host runs the command, so the name stays bare and the host resolves it;
+-- the sandbox's own files say nothing about what the host has installed.
+local function locate(deps)
+	if deps.secret_tool_bin then
+		return deps.secret_tool_bin
+	end
+	local env = deps.env or {}
+	if env.flatpak and env.flatpak() then
+		return "secret-tool"
+	end
+	return deps.find_binary and deps.find_binary("secret-tool") or nil
+end
 function M.new(deps)
 	local commands = cli.new(deps)
-	local self = { name = "linux", tick = commands.tick, close = commands.close }
+	local executable = locate(deps)
+	local self = { name = "linux", tick = commands.tick, close = commands.close, executable = executable }
+	if not executable then
+		-- The credential service checks this before its Secret Service probe and uses the file store.
+		self.missing = i18n.with({ kind = "unavailable" }, "keyring_secret_tool_missing")
+	end
 	local function run(args, input, callback)
-		local executable = deps.secret_tool_bin or "secret-tool"
+		if not executable then
+			callback(nil, self.missing)
+			return
+		end
 		commands.run(executable, args, input, callback)
 	end
 	function self.store(account, value, callback)

@@ -75,6 +75,8 @@ function M.new(deps)
 	local locked = deps.lock or require("crier_obs.secrets.lock").new(deps)
 	local ready = primary ~= "linux" or deps.skip_probe == true
 	local probing, linux_available = false, true
+	-- The i18n key of the credential store row while the file store stands in for Secret Service.
+	local fallback = "keyring_file_fallback"
 	local function persist(account, backend)
 		if index_error then
 			return nil, index_error
@@ -247,7 +249,7 @@ function M.new(deps)
 		local state = closed and "unavailable" or ready and "ready" or "checking"
 		local text = LABELS[primary] and i18n.message(LABELS[primary])
 		if primary == "file" and platform ~= "Windows" then
-			text = i18n.message("keyring_file_fallback", text)
+			text = i18n.message(fallback, text)
 		end
 		text = text or unavailable_text
 		return {
@@ -468,6 +470,13 @@ function M.new(deps)
 	end
 	local function probe()
 		probing = true
+		local missing = backends.linux.missing
+		if missing then
+			primary, linux_available, ready = "file", false, true
+			fallback = "keyring_file_no_secret_tool"
+			log.warn(missing.message .. "; credentials use the encrypted file store")
+			return
+		end
 		local bytes, err = fs.random_bytes(12)
 		if not bytes then
 			primary, linux_available, ready = "file", false, true

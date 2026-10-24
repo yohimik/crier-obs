@@ -57,6 +57,8 @@ function M.new(deps)
 			spawner = spawner,
 			state_dir = paths.root,
 			store = store,
+			-- secret-tool is found on the same augmented PATH as crier and the tools Check setup names.
+			find_binary = resolver.find_binary,
 		})
 	local installer = deps.installer
 		or require("crier_obs.invoke.installer").new({

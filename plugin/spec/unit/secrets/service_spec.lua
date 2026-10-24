@@ -240,6 +240,43 @@ describe("credential service", function()
 		assert.equal("done", job.state)
 		assert.equal("file", s.status("default", "token").backend)
 	end)
+	it("uses encrypted files with secret-tool not found, without spawning a canary", function()
+		local lines, spawned = {}, 0
+		local s = new({
+			fs = memory_fs(),
+			state_dir = "/state",
+			platform = "Linux",
+			find_binary = function()
+				return nil
+			end,
+			spawner = {
+				spawn = function()
+					spawned = spawned + 1
+				end,
+			},
+			log = require("crier_obs.log").new({
+				obs = {
+					LOG_WARNING = 3,
+					script_log = function(_, text)
+						lines[#lines + 1] = text
+					end,
+				},
+			}),
+		})
+		assert.equal("checking", s.backend_status().state)
+		s.tick()
+		local status = s.backend_status()
+		assert.equal("file", status.name)
+		assert.equal("ready", status.state)
+		assert.equal("Encrypted credential file (secret-tool not found)", status.label)
+		assert.equal("keyring_file_no_secret_tool", status.label_text.key)
+		assert.same({ "crier-obs: secret-tool not found; credentials use the encrypted file store" }, lines)
+		local job = s.commit("default", "token", "secret")
+		drain(s)
+		assert.equal("done", job.state)
+		assert.equal("file", s.status("default", "token").backend)
+		assert.equal(0, spawned)
+	end)
 	it("does not resurrect a cache entry when forgetting an in-flight save", function()
 		local s = new({ fs = memory_fs(), state_dir = "/state", backend = backend() })
 		s.commit("default", "token", "secret")

@@ -8,6 +8,10 @@ local function run_backend(factory, answer, operation, value)
 	local plans = {}
 	local b = factory.new({
 		state_dir = "/state",
+		-- The Secret Service backend spawns the secret-tool that the resolver finds on the augmented PATH.
+		find_binary = function(name)
+			return "/home/user/.local/bin/" .. name
+		end,
 		spawner = {
 			spawn = function(plan)
 				plans[#plans + 1] = plan
@@ -59,6 +63,7 @@ describe("credential keyrings", function()
 	it("handles Secret Service lookup, store, forget and timeout without secret argv", function()
 		local ok, _, plan = run_backend(linux, { code = 0 }, "store", "secret")
 		assert.is_true(ok)
+		assert.equal("/home/user/.local/bin/secret-tool", plan.executable)
 		assert.equal("secret", plan.stdin_data)
 		assert.is_nil(table.concat(plan.args):find("secret", 1, true))
 		local value = run_backend(linux, { code = 0, stdout = "secret\n" }, "lookup")
@@ -67,6 +72,39 @@ describe("credential keyrings", function()
 		assert.is_true(forgotten)
 		local _, err = run_backend(linux, { code = 0, timed_out = true }, "lookup")
 		assert.equal("unavailable", err.kind)
+	end)
+	it("spawns no secret-tool the augmented PATH lacks and reports it as not found", function()
+		local asked, spawned = {}, 0
+		local b = linux.new({
+			find_binary = function(name)
+				asked[#asked + 1] = name
+				return nil
+			end,
+			spawner = {
+				spawn = function()
+					spawned = spawned + 1
+				end,
+			},
+		})
+		assert.same({ "secret-tool" }, asked)
+		assert.is_nil(b.executable)
+		assert.equal("unavailable", b.missing.kind)
+		assert.equal("secret-tool not found", b.missing.message)
+		assert.equal("keyring_secret_tool_missing", b.missing.message_text.key)
+		local errors = {}
+		b.store("account", "secret", function(ok, err)
+			assert.is_false(ok)
+			errors[#errors + 1] = err
+		end)
+		for _, operation in ipairs({ "lookup", "exists", "forget" }) do
+			b[operation]("account", function(value, err)
+				assert.is_falsy(value)
+				errors[#errors + 1] = err
+			end)
+		end
+		b.tick()
+		assert.same({ b.missing, b.missing, b.missing, b.missing }, errors)
+		assert.equal(0, spawned)
 	end)
 	it("cancels active pipe jobs on close without late callbacks", function()
 		local cancelled, called = 0, false

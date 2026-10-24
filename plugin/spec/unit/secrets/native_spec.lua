@@ -5,10 +5,11 @@ local service_module = require("crier_obs.secrets.service")
 local macos = require("crier_obs.secrets.keyring.macos")
 local linux = require("crier_obs.secrets.keyring.linux")
 local file = require("crier_obs.secrets.keyring.file")
+local resolver_module = require("crier_obs.proc.resolver")
 local lock_module = require("crier_obs.secrets.lock")
 local obs = require("stub.obslua")
 local log_module = require("crier_obs.log")
-ffi.cdef("int usleep(unsigned int);")
+ffi.cdef("int usleep(unsigned int); char *getcwd(char*,unsigned long);")
 local fs = fs_module.new({ obs = obs })
 local source = debug.getinfo(1, "S").source:sub(2)
 local fake_dir = source:gsub("unit/secrets/native_spec.lua$", "fakes/")
@@ -68,6 +69,51 @@ describe("native credential pipes #posix", function()
 			assert.equal("done", forgotten.state)
 			service.close()
 		end
+	end)
+	it("probes Secret Service through the secret-tool the augmented PATH holds, by its absolute path", function()
+		local state, fake = temporary(), temporary()
+		local cwd = ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
+		-- The fakes folder is on the augmented PATH only; OBS's own PATH (this process's) lacks it.
+		local tools = (fake_dir:sub(1, 1) == "/" and "" or cwd .. "/") .. fake_dir:gsub("/$", "")
+		local resolver = resolver_module.new({
+			fs = fs,
+			pin = "1.1.1",
+			env = {
+				augmented_path = function()
+					return "/nonexistent/bin:" .. tools
+				end,
+			},
+		})
+		local spawner = spawner_module.new({})
+		local executables = {}
+		local spawn = spawner.spawn
+		function spawner.spawn(plan)
+			executables[#executables + 1] = plan.executable
+			return spawn(plan)
+		end
+		local service = service_module.new({
+			fs = fs,
+			state_dir = state,
+			spawner = spawner,
+			find_binary = resolver.find_binary,
+			command_env = { FAKE_KEYRING_DIR = fake },
+			platform = "Linux",
+			log = log_module.new({}),
+		})
+		for _ = 1, 5000 do
+			service.tick()
+			if service.backend_status().state == "ready" then
+				break
+			end
+			ffi.C.usleep(1000)
+		end
+		assert.equal("linux", service.backend_status().name)
+		-- The canary is stored, read back and cleared, each through the absolute path.
+		assert.equal(3, #executables)
+		for _, executable in ipairs(executables) do
+			assert.equal(tools .. "/secret-tool", executable)
+		end
+		service.close()
 	end)
 	it("does not report an empty security lookup as a successful save", function()
 		local state, fake = temporary(), temporary()

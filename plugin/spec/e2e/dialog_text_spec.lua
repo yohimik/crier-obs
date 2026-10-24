@@ -152,8 +152,9 @@ local function fixture(options)
 		return true
 	end
 	local script = options.script or {}
-	local spawner = {}
+	local spawner, spawned = {}, {}
 	function spawner.spawn(plan)
+		spawned[#spawned + 1] = plan
 		local outcome = table.remove(script[plan.kind] or {}, 1) or { result = { code = 0, stdout = "", stderr = "" } }
 		if outcome.fail then
 			return nil, { kind = "process", message = outcome.fail }
@@ -235,7 +236,7 @@ local function fixture(options)
 	}
 	local sandbox = options.sandbox_env
 	local env = {
-		os = "OSX",
+		os = options.os or "OSX",
 		getenv = function()
 			return nil
 		end,
@@ -273,7 +274,8 @@ local function fixture(options)
 		paths = { root = "/state", runs = "/state/runs", template = "/state/template.html" },
 		spawner = spawner,
 		runs = runs,
-		secrets = secrets,
+		-- options.own_secrets lets the plugin build its credential service from its own ports.
+		secrets = not options.own_secrets and secrets or nil,
 		store = store,
 	})
 	local data = obs.obs_data_create()
@@ -292,7 +294,15 @@ local function fixture(options)
 		dynamic[value] = true
 	end
 	local seen, verdicts = {}, {}
-	local self = { p = p, data = data, script = script, binaries = binaries, secrets = secrets, seen = seen }
+	local self = {
+		p = p,
+		data = data,
+		script = script,
+		binaries = binaries,
+		secrets = p.secrets,
+		seen = seen,
+		spawned = spawned,
+	}
 	function self.tick(times)
 		for _ = 1, times or 1 do
 			p.tick()
@@ -580,6 +590,43 @@ describe("dialog row text", function()
 		f = fixture({ init_fail = true, dynamic = { "read-only file system" } })
 		f.check()
 		assert_seen(f, { say("state_unavailable", "read-only file system") })
+		f.close()
+	end)
+
+	it("runs the secret-tool the augmented PATH holds, and names a missing one in the store row", function()
+		-- The plugin's own credential service on Linux; the fixture's augmented PATH is /usr/local/bin.
+		local canary = string.rep("72", 12)
+		local f = fixture({
+			os = "Linux",
+			own_secrets = true,
+			binaries = { ["/usr/local/bin/secret-tool"] = true },
+			script = {
+				keyring = {
+					{ result = { code = 0, stdout = "", stderr = "" } },
+					{ result = { code = 0, stdout = canary .. "\n", stderr = "" } },
+				},
+			},
+		})
+		f.tick(3)
+		f.check()
+		assert_seen(f, { say("keyring_linux") })
+		local keyring = 0
+		for _, plan in ipairs(f.spawned) do
+			if plan.kind == "keyring" then
+				keyring = keyring + 1
+				assert.equal("/usr/local/bin/secret-tool", plan.executable)
+			end
+		end
+		assert.is_true(keyring >= 3)
+		f.close()
+
+		f = fixture({ os = "Linux", own_secrets = true })
+		f.tick(3)
+		f.check()
+		assert_seen(f, { say("keyring_file_no_secret_tool", say("keyring_file")) })
+		for _, plan in ipairs(f.spawned) do
+			assert.is_not.equal("keyring", plan.kind)
+		end
 		f.close()
 	end)
 
