@@ -40,7 +40,7 @@ Each gate is a script in `dispat.yaml`, run from `plugin/`. The `tools/*.sh` gat
 
 **Bundle check.** `tools/bundle_check.sh` bundles `dist/crier-obs.lua` as version `0.0.0-ci` and compiles it with `luajit -bl`. It fails unless the bundle holds exactly the modules under `src/crier_obs`. Then it runs two checks on the bundle:
 
-- `tools/smoke.lua` loads the bundle alone. Only the OBS stub comes from the checkout, and a module the bundle lacks fails the smoke rather than loading from `src/`. It runs the script with OBS's nonthrowing `error`, builds every registry property, and posts a start and an end through the fake crier with native spawning. Then it checks the generated configuration, the data document, the captions, the released references and timers, and that no error was logged.
+- `tools/smoke.lua` loads the bundle alone. Only the OBS stub comes from the checkout, and a module the bundle lacks fails the smoke rather than loading from `src/`. It runs the script with OBS's nonthrowing `error`, builds every registry property, and posts a start and an end through the fake crier with native spawning. Then it checks the generated configuration, the data document, the captions, the released references and timers, and that no error was logged. It finds the stub and the fake crier from its own path, so `luajit plugin/tools/smoke.lua plugin/dist/crier-obs.lua` works from the repository root as well as from `plugin/`.
 - `spec/e2e` runs again with `CRIER_OBS_E2E_BUNDLE=dist/crier-obs.lua`, so the lifecycle specs exercise the delivered chunk instead of `src/`.
 
 ## CI

@@ -2,7 +2,10 @@
 -- The bundle runs alone. The OBS stub (spec/stub) is the only file read from the checkout, and every
 -- crier_obs module, including the json and utf16 modules the stub itself uses, must come from the
 -- bundle's package.preload: a module the bundle lacks fails the smoke instead of loading from src/.
-package.path = "spec/?.lua"
+-- The package folder comes from this script's own path, so the smoke runs from plugin/ and from the
+-- repository root alike (luajit plugin/tools/smoke.lua plugin/dist/crier-obs.lua).
+local package_dir = (arg[0] or ""):match("^(.-)tools[/\\]smoke%.lua$") or ""
+package.path = package_dir .. "spec/?.lua"
 package.cpath = ""
 local loaders = package.loaders
 local preload_loader, lua_loader = loaders[1], loaders[2]
@@ -26,7 +29,7 @@ local function stub()
 	obs = obs or require("obslua")
 	return obs
 end
-local path = arg[1] or "dist/crier-obs.lua"
+local path = arg[1] or package_dir .. "dist/crier-obs.lua"
 local source = assert(io.open(path, "rb"))
 local text = source:read("*a")
 source:close()
@@ -60,7 +63,10 @@ else
 	assert(ffi.C.setenv("CRIER_OBS_STATE_DIR", state, 1) == 0)
 	cwd = ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
 end
-local fake = cwd .. (ffi.os == "Windows" and "/spec/fakes/crier_win/crier.exe" or "/spec/fakes/crier")
+-- crier runs in a working directory of its own, so the fake gets an absolute path.
+local root = (package_dir:match("^[/\\]") or package_dir:match("^%a:[/\\]")) and package_dir
+	or cwd .. "/" .. package_dir
+local fake = root .. (ffi.os == "Windows" and "spec/fakes/crier_win/crier.exe" or "spec/fakes/crier")
 local settings
 local function run()
 	error = function(message)
