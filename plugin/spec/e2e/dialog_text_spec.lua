@@ -598,11 +598,17 @@ describe("dialog row text", function()
 			},
 		}) do
 			local vars = case[1]
+			-- A Linux environment on any host: no /.flatpak-info probe through the host's C library.
 			local sandbox_env = env_module.new({
 				platform = "Linux",
 				getenv = function(name)
 					return vars[name]
 				end,
+				fs = {
+					exists = function()
+						return false
+					end,
+				},
 			})
 			local binaries = case[2]
 			binaries["/state/bin/crier"] = true
