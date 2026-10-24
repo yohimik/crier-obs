@@ -3,9 +3,14 @@ on:
   schedule:
     - cron: '17 8 * * 1'
   workflow_dispatch:
+# The pull request is opened with GITHUB_TOKEN, which needs the repository setting "Allow GitHub Actions
+# to create and approve pull requests". Such a pull request starts no workflow, so crier_sync.sh runs the
+# gates itself and then dispatches tests.yml on the branch (a dispatch is the one event GITHUB_TOKEN may
+# start), whose checks report on the pull request's head commit. No extra secret is needed.
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 concurrency:
   group: crier-sync
   cancel-in-progress: false

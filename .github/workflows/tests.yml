@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+  # crier-sync dispatches this on its pin-bump branch: its GITHUB_TOKEN pull request triggers nothing.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -37,9 +39,14 @@ jobs:
           luarocks "${args[@]}" --local install luacheck 1.2.0
           echo "$HOME/.luarocks/bin" >> "$GITHUB_PATH"
 
+      # Pinned like release.yml: the gates change behaviour only when this version is bumped on purpose.
       - uses: yohimik/dispat@v1
+        with: {version: "1.10.0"}
       - name: Required gates
         shell: bash
+        env:
+          # The registry gate reads the pinned crier release through the API, which limits anonymous calls.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           args=(--lua-version=5.1)
           if [[ "$RUNNER_OS" == macOS ]]; then args+=(--lua-dir="$(brew --prefix luajit)"); fi

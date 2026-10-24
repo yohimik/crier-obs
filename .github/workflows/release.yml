@@ -9,16 +9,35 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    outputs:
+      releasing: ${{ steps.plan.outputs.releasing }}
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
       - uses: yohimik/dispat@v1
-      - run: dispat status --require-release --log-format json
+        with: {version: "1.10.0"}
+      # --require-release exits 3 when nothing is releasable. That is the answer, not a failure: the run
+      # ends green with the later jobs skipped. Every other nonzero code is a real failure.
+      - name: What would be released
+        id: plan
+        run: |
+          rc=0
+          dispat status --require-release --log-format json || rc=$?
+          case "$rc" in
+            0) echo "releasing=true" >> "$GITHUB_OUTPUT" ;;
+            3)
+              echo "releasing=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Nothing to release since the last tag"
+              ;;
+            *) exit "$rc" ;;
+          esac
   tests:
     needs: plan
+    if: needs.plan.outputs.releasing == 'true'
     uses: ./.github/workflows/tests.yml
   release:
     needs: [plan, tests]
+    if: needs.plan.outputs.releasing == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,6 +49,7 @@ jobs:
         with: {fetch-depth: 0}
       - run: sudo apt-get update && sudo apt-get install -y luajit libluajit-5.1-dev
       - uses: yohimik/dispat@v1
+        with: {version: "1.10.0"}
       - name: Publish through dispat
         id: dispat
         env:
@@ -58,8 +78,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.release.outputs.version }}
+        # The smoke reads only spec/ from the checkout; without src/ the asset cannot borrow a module from it.
         run: |
           gh release download "v$VERSION" --pattern crier-obs.lua --dir plugin/dist
           cd plugin
+          rm -rf src
           luajit -bl dist/crier-obs.lua >/dev/null
           luajit tools/smoke.lua dist/crier-obs.lua --version "$VERSION" --pin "$(cat crier.version)"
