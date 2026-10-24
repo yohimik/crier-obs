@@ -1,5 +1,6 @@
 local json = require("crier_obs.json")
 local errors = require("crier_obs.errors")
+local i18n = require("crier_obs.i18n")
 local M = {}
 local TAIL_LINES = 20
 -- crier's exit code decides the log level: 0 info, 4 (some platforms failed) warn, anything else error.
@@ -47,14 +48,16 @@ function M.parse(result, log)
 			failed[#failed + 1] = { platform = plain(outcome.platform), error = plain(outcome.error) }
 		end
 	end
-	local message = scrub(err.message)
+	-- message is English for the log; message_text is what the dialog's last run row shows.
+	local text = err.message_text
 	if #failed > 0 then
 		local names = {}
 		for _, outcome in ipairs(failed) do
 			names[#names + 1] = outcome.platform
 		end
-		message = message .. " (" .. table.concat(names, ", ") .. ")"
+		text = i18n.message("run_failed_platforms", text, table.concat(names, ", "))
 	end
+	local message = scrub(i18n.render(i18n.t, text))
 	local summary
 	if type(data) == "table" and data.dryRun then
 		local planned = {}
@@ -73,6 +76,7 @@ function M.parse(result, log)
 		level = M.level(result.code, result.timed_out),
 		kind = err.kind,
 		message = message,
+		message_text = text,
 		hint = err.hint and scrub(err.hint),
 		stderr = scrub(table.concat(tail, "\n")),
 		results = results,

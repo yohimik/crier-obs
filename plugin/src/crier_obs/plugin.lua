@@ -422,7 +422,8 @@ function M.new(deps)
 		end
 		local backend = secrets.backend_status()
 		local installing = install.state == "installing" or install.state == "failed" or install.state == "cancelled"
-		local crier = installing and install.message or r.message
+		local crier = i18n.shown(t, installing and install or r)
+		local keyring = i18n.shown(t, backend, "label")
 		local level = install.state == "failed" and "error"
 			or (not installing and (r.state == "missing" or r.state == "failed")) and "error"
 			or (not installing and r.state == "outdated") and "warning"
@@ -430,7 +431,7 @@ function M.new(deps)
 		return {
 			crier = crier,
 			crier_level = level,
-			keyring = backend.state == "checking" and t("keyring_state", backend.label, t("checking")) or backend.label,
+			keyring = backend.state == "checking" and t("keyring_state", keyring, t("checking")) or keyring,
 			last_run = last_run,
 			logs = initialized and paths.runs or t("state_unavailable", state_error or "?"),
 			update_available = r.state == "outdated",
@@ -582,7 +583,7 @@ function M.new(deps)
 		elseif r.state == "missing" then
 			log.warn(r.message .. "; click Install crier", "crier-status")
 		elseif r.state == "failed" then
-			log.warn("crier check failed: " .. r.message)
+			log.warn(r.message)
 		end
 	end
 	local function poll_adopted()
@@ -737,7 +738,7 @@ function M.new(deps)
 			end,
 			on_done = function(job)
 				if job.result then
-					last_run = job.result.message
+					last_run = log.scrub(i18n.shown(t, job.result) or "")
 				end
 				-- An end post that never reached crier still ends the live session's credentials.
 				if job.event == "end" and not job.spawned then

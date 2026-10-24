@@ -1,32 +1,30 @@
+local i18n = require("crier_obs.i18n")
 local M = {}
 function M.new(kind, message, hint)
 	return { kind = kind, message = message, hint = hint }
 end
-local codes = {}
-codes[0] = "Posted successfully"
-codes[1] = "Invalid configuration"
-codes[2] = "Invalid command arguments"
-codes[3] = "Rendering failed"
-codes[4] = "Some platforms failed"
-codes[5] = "Publishing failed"
-codes[6] = "Staging failed"
-codes[97] = "Run directory is missing"
-codes[126] = "crier is not executable"
-codes[127] = "crier was not found"
+-- crier's documented exit codes; i18n names each one exit_<code> for the last run row.
+local codes = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true }
+codes[97], codes[126], codes[127] = true, true, true
+-- message is English for the log, message_text what the last run row shows; the hint is only logged.
 function M.from_exit(code, signal)
 	if signal then
-		return M.new("signal", "crier stopped by signal " .. signal)
+		return i18n.with(M.new("signal"), "exit_signal", tostring(signal))
 	end
 	if code and code >= 0x80000000 then
-		return M.new("crashed", "crier crashed (NTSTATUS " .. string.format("0x%08x", code) .. ")")
+		return i18n.with(M.new("crashed"), "exit_crashed", string.format("0x%08x", code))
 	end
-	return M.new(
+	local err = M.new(
 		code == 0 and "ok" or "exit",
-		codes[code] or ("crier exited with code " .. tostring(code)),
+		nil,
 		code == 126 and "On macOS, check the downloaded binary’s quarantine attribute." or nil
 	)
+	if codes[code] then
+		return i18n.with(err, "exit_" .. code)
+	end
+	return i18n.with(err, "exit_other", tostring(code))
 end
 function M.timeout()
-	return M.new("timeout", "crier exceeded the run timeout")
+	return i18n.with(M.new("timeout"), "exit_timeout")
 end
 return M

@@ -1,4 +1,5 @@
 local ffi = require("ffi")
+local i18n = require("crier_obs.i18n")
 local M = {}
 -- Numeric identifiers compared as digit strings, so no precision is lost past 2^53.
 local function numeric_compare(a, b)
@@ -105,9 +106,14 @@ function M.new(deps)
 	local pin = assert(deps.pin, "resolver needs the pinned crier version")
 	local windows = (env.os or ffi.os) == "Windows"
 	local sep = windows and "\\" or "/"
-	local current = { state = "missing", message = "crier is not installed", button = "Install crier" }
+	-- message is English for the log; message_text is what the dialog's crier row shows.
+	local current = i18n.with({ state = "missing" }, "crier_missing")
 	local process
 	local self = {}
+	local function set(state, key, ...)
+		current = i18n.with({ state = state, path = current.path }, key, ...)
+		return current
+	end
 	local function search_path()
 		local path = env.augmented_path or env.path
 		if type(path) == "function" then
@@ -139,7 +145,7 @@ function M.new(deps)
 			if fs.exists(explicit) then
 				return explicit
 			end
-			return nil, { kind = "missing", message = "Configured crier path does not exist" }
+			return nil, i18n.with({ kind = "missing" }, "crier_path_missing")
 		end
 		local managed = deps.state_dir
 			and (deps.state_dir .. sep .. "bin" .. sep .. (windows and "crier.exe" or "crier"))
@@ -150,15 +156,15 @@ function M.new(deps)
 		if found then
 			return found
 		end
-		return nil, { kind = "missing", message = "crier is not installed" }
+		return nil, i18n.with({ kind = "missing" }, "crier_missing")
 	end
 	function self.probe(explicit)
 		if process then
-			return nil, { kind = "busy", message = "Version check is already running" }
+			return nil, { kind = "busy", message = "Version check is already running" } -- logged only
 		end
 		local path, e = self.find(explicit)
 		if not path then
-			current = { state = "missing", message = e.message, button = "Install crier" }
+			current = { state = "missing", message = e.message, message_text = e.message_text }
 			return nil, e
 		end
 		process, e = deps.spawner.spawn({
@@ -171,10 +177,10 @@ function M.new(deps)
 			kind = "probe",
 		})
 		if not process then
-			current = { state = "failed", message = e.message, button = "Install crier" }
+			current = i18n.with({ state = "failed" }, "crier_check_failed_reason", i18n.of(e))
 			return nil, e
 		end
-		current = { state = "checking", path = path, message = "Checking crier version…", button = "Install crier" }
+		current = i18n.with({ state = "checking", path = path }, "crier_checking")
 		return process
 	end
 	function self.tick()
@@ -186,39 +192,38 @@ function M.new(deps)
 			local failed = process
 			process = nil
 			failed.cancel()
-			current.state, current.message = "failed", e.message or tostring(e)
-			return current, e
+			return set("failed", "crier_check_failed_reason", e.message or tostring(e)), e
 		end
 		if not r then
 			return current
 		end
 		process = nil
-		if r.code ~= 0 or r.timed_out then
-			current.state = "failed"
-			current.message = r.timed_out and "Version check timed out" or r.stderr or "Version check failed"
-			return current
+		if r.timed_out then
+			return set("failed", "crier_check_timed_out")
+		end
+		if r.code ~= 0 then
+			local stderr = (r.stderr or ""):match("^%s*(.-)%s*$")
+			if stderr == "" then
+				return set("failed", "crier_check_failed")
+			end
+			return set("failed", "crier_check_failed_reason", stderr)
 		end
 		local data = deps.json and deps.json.decode(r.stdout or "")
 		local version = type(data) == "table" and (data.version or data.Version)
 			or (r.stdout or ""):match("(%d+%.%d+%.%d+[%w.+%-]*)")
 		if not version then
-			current.state = "failed"
-			current.message = "Cannot read crier version"
-			return current
+			return set("failed", "crier_version_unreadable")
 		end
 		local cmp = M.compare(version, pin)
 		if cmp == nil then
-			current.state = "failed"
-			current.message = "Invalid crier version"
-			return current
+			return set("failed", "crier_version_invalid")
+		end
+		if cmp < 0 then
+			set("outdated", "crier_outdated", version, current.path, pin)
+		else
+			set("ready", "crier_ready", version, current.path)
 		end
 		current.version = version
-		current.state = cmp < 0 and "outdated" or "ready"
-		current.button = cmp < 0 and "Update crier" or "Install crier"
-		current.message = "crier " .. version .. " at " .. current.path
-		if cmp < 0 then
-			current.message = current.message .. " (older than " .. pin .. ")"
-		end
 		return current
 	end
 	function self.status()
@@ -229,7 +234,7 @@ function M.new(deps)
 			local pending = process
 			process = nil
 			pending.cancel()
-			current.state, current.message = "cancelled", "Version check cancelled"
+			set("cancelled", "crier_check_cancelled")
 		end
 	end
 	return self

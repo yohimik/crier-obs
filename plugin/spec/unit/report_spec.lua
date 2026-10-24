@@ -40,7 +40,11 @@ describe("crier exit codes and reports", function()
 		assert.equal("timeout", timed.kind)
 		assert.equal("error", timed.level)
 		assert.is_false(timed.ok)
-		assert.same({ kind = "timeout", message = "crier exceeded the run timeout" }, errors.timeout())
+		assert.same({
+			kind = "timeout",
+			message = "crier exceeded the run timeout",
+			message_text = { key = "exit_timeout", n = 0 },
+		}, errors.timeout())
 	end)
 
 	it("names the platforms that failed and summarises dry runs", function()

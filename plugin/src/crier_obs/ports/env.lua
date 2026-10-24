@@ -1,4 +1,5 @@
 local ffi = require("ffi")
+local i18n = require("crier_obs.i18n")
 local M = {}
 ffi.cdef([[int access(const char*,int); int sysctlbyname(const char*,void*,size_t*,void*,size_t);
 int open(const char*, int, ...); long read(int,void*,unsigned long); int close(int);]])
@@ -125,14 +126,11 @@ function M.new(deps)
 		end
 		return nil
 	end
+	-- Shown as a Check setup row and logged once at load: message is English, message_text the row.
 	function self.sandbox_status(fs)
 		if not self.flatpak() then
 			if self.snap() then
-				return {
-					kind = "snap",
-					ok = false,
-					message = "Snap may isolate host tools and credential services; use a native OBS package",
-				}
+				return i18n.with({ kind = "snap", ok = false }, "sandbox_snap")
 			end
 			return { kind = "native", ok = true }
 		end
@@ -147,18 +145,9 @@ function M.new(deps)
 			end
 		end
 		if not helper then
-			return {
-				kind = "flatpak",
-				ok = false,
-				message = "Flatpak host access is unavailable: flatpak-spawn is missing; use a native OBS package",
-			}
+			return i18n.with({ kind = "flatpak", ok = false }, "sandbox_flatpak_missing")
 		end
-		return {
-			kind = "flatpak",
-			helper = helper,
-			warning = true,
-			message = "Flatpak host bridge requires flatpak-spawn --env-fd support and shared home paths; Check setup verifies the host command",
-		}
+		return i18n.with({ kind = "flatpak", helper = helper, warning = true }, "sandbox_flatpak_bridge")
 	end
 	return self
 end

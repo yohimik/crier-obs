@@ -3,6 +3,8 @@ local guidance = "Instagram needs a public URL. ngrok: install it, sign up, run 
 guidance = guidance .. "then select ngrok. The free tier interstitial breaks Meta fetching; use a paid plan or zrok. "
 guidance = guidance .. "zrok: install it, run zrok invite and zrok enable <token>, then select zrok. "
 guidance = guidance .. "S3 is an alternative without a tunnel."
+local flatpak_bridge = "Flatpak host bridge requires flatpak-spawn --env-fd support and shared home paths; "
+flatpak_bridge = flatpak_bridge .. "Check setup verifies the host command"
 
 -- Every string the dialog and the status rows show, by key. crier key names and crier's own key
 -- descriptions are shown as crier documents them and are not part of this table.
@@ -56,6 +58,86 @@ M.strings = {
 		not_stored_reason = "not stored: %s",
 		stored = "stored ✓",
 		stored_unavailable = "stored in keyring (keyring unavailable: %s)",
+		-- The crier row: discovery, version check and Install crier. %s is a version, a path, or what
+		-- crier, its installer or the operating system reported.
+		crier_path_missing = "Configured crier path does not exist",
+		crier_checking = "Checking crier version…",
+		crier_ready = "crier %s at %s",
+		crier_outdated = "crier %s at %s (older than %s)",
+		crier_check_failed = "Version check failed",
+		crier_check_failed_reason = "Version check failed: %s",
+		crier_check_timed_out = "Version check timed out",
+		crier_check_cancelled = "Version check cancelled",
+		crier_version_unreadable = "Cannot read crier version",
+		crier_version_invalid = "Invalid crier version",
+		install_running = "Installing crier %s…",
+		install_checking = "Checking installed crier…",
+		install_failed = "Install failed: %s",
+		install_timed_out = "Installation timed out",
+		install_exit_failed = "Installation failed",
+		install_cancelled = "Installation cancelled because the script unloaded",
+		-- The credential store row and the credential status rows.
+		keyring_macos = "macOS Keychain",
+		keyring_windows = "Windows DPAPI (current user)",
+		keyring_linux = "Secret Service",
+		keyring_file = "Encrypted credential file",
+		keyring_file_fallback = "%s (Secret Service unavailable)",
+		keyring_unusable = "The %s cannot be used: %s",
+		keyring_unavailable = "Credential store unavailable",
+		credential_invalid_account = "Invalid credential set or key",
+		credential_index_corrupted = "Credential index is corrupted",
+		credential_service_closed = "Credential service is closed",
+		credential_empty = "Enter a credential before saving",
+		credential_backend_locked = "Stored credential backend is unavailable; unlock or restore it",
+		credential_backend_unsaved = "Stored credential backend is unavailable; restore it before saving",
+		credential_backend_unavailable = "Stored credential backend is unavailable",
+		credential_missing = "Stored credential is missing; re-enter it",
+		credential_not_saved = "Credential could not be saved",
+		credential_unverified = "Credential verification failed; it was not saved",
+		-- The last run row: how crier's run ended.
+		exit_0 = "Posted successfully",
+		exit_1 = "Invalid configuration",
+		exit_2 = "Invalid command arguments",
+		exit_3 = "Rendering failed",
+		exit_4 = "Some platforms failed",
+		exit_5 = "Publishing failed",
+		exit_6 = "Staging failed",
+		exit_97 = "Run directory is missing",
+		exit_126 = "crier is not executable",
+		exit_127 = "crier was not found",
+		exit_other = "crier exited with code %s",
+		exit_signal = "crier stopped by signal %s",
+		exit_crashed = "crier crashed (NTSTATUS %s)",
+		exit_timeout = "crier exceeded the run timeout",
+		run_failed_platforms = "%s (%s)",
+		post_failed = "Post failed: %s",
+		post_base_changed = "Base configuration changed after destination checks; post skipped",
+		post_journal_failed = "Cannot journal the running post",
+		-- Check setup result rows: a mark, then what was checked and what it reported.
+		result_ok = "✓",
+		result_failed = "✗",
+		result_warning = "!",
+		result_pending = "…",
+		result_ms = "%s ms",
+		target_crier = "crier",
+		target_keyring = "keyring",
+		target_stage = "stage",
+		target_ffmpeg = "ffmpeg",
+		target_tunnel = "tunnel",
+		target_config = "config",
+		target_platforms = "platforms",
+		target_ping = "ping",
+		target_setup = "setup",
+		target_snap = "snap",
+		target_flatpak = "flatpak",
+		check_staging_disabled = "Staging is not enabled",
+		check_stage_no_credentials = "This staging mode has no credentials to check",
+		check_not_found = "Cannot find %s",
+		check_base_changed = "Base configuration changed while it was being checked",
+		check_failed_code = "Check failed with code %s",
+		sandbox_snap = "Snap may isolate host tools and credential services; use a native OBS package",
+		sandbox_flatpak_missing = "Flatpak host access is unavailable: flatpak-spawn is missing; use a native OBS package",
+		sandbox_flatpak_bridge = flatpak_bridge,
 		-- Posting block.
 		post_to = "Post to",
 		post_to_platform = "Post every enabled trigger to %s",
@@ -101,4 +183,43 @@ function M.new(locale)
 	end
 end
 M.t = M.new("en-US")
+-- A message the dialog shows, kept as its key and arguments so the dialog renders it in the OBS
+-- locale while logs and error tables keep the English text. An argument is a plain value shown as
+-- it is (a path, a version, crier's output, an operating system error) or another message.
+function M.message(key, ...)
+	return { key = key, n = select("#", ...), ... }
+end
+function M.render(t, value)
+	if type(value) ~= "table" or value.key == nil then
+		return value
+	end
+	local args = {}
+	for i = 1, value.n do
+		args[i] = M.render(t, value[i])
+	end
+	return t(value.key, unpack(args, 1, value.n))
+end
+-- Sets object[field] (English, for logs and errors) and object[field .. "_text"] (for the dialog).
+function M.set(object, field, key, ...)
+	local text = M.message(key, ...)
+	object[field], object[field .. "_text"] = M.render(M.t, text), text
+	return object
+end
+function M.with(object, key, ...)
+	return M.set(object, "message", key, ...)
+end
+-- What the dialog shows for object[field]: the message kept in object[field .. "_text"] when there
+-- is one, otherwise the plain value.
+function M.shown(t, object, field)
+	field = field or "message"
+	local text = object[field .. "_text"]
+	if text ~= nil then
+		return M.render(t, text)
+	end
+	return object[field]
+end
+-- An error or status as an argument for another message: its message when it has one.
+function M.of(object)
+	return object.message_text or object.message
+end
 return M

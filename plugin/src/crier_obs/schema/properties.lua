@@ -157,6 +157,11 @@ function M.new(deps)
 		end
 		return p
 	end
+	-- A status field as the dialog shows it: its message (name .. "_text") in this locale, or the
+	-- plain value (a path, crier's output) as it is.
+	local function shown(object, name)
+		return i18n.shown(t, object, name)
+	end
 	local function credential_text(status)
 		if type(status) ~= "table" then
 			return t("not_stored")
@@ -165,9 +170,9 @@ function M.new(deps)
 		elseif status.state == "checking" or status.state == "saving" or status.state == "forgetting" then
 			return t(status.state)
 		elseif status.state == "unavailable" and status.bound then
-			return t("stored_unavailable", status.message or "")
+			return t("stored_unavailable", shown(status) or "")
 		elseif status.message and status.message ~= "" then
-			return t("not_stored_reason", status.message)
+			return t("not_stored_reason", shown(status))
 		end
 		return t("not_stored")
 	end
@@ -175,14 +180,19 @@ function M.new(deps)
 		if row.text then
 			return row.text
 		end
-		local parts = { row.ok == false and "✗" or row.warning and "!" or row.ok and "✓" or "…" }
+		local mark = row.ok == false and "result_failed"
+			or row.warning and "result_warning"
+			or row.ok and "result_ok"
+			or "result_pending"
+		local parts = { t(mark) }
 		for _, name in ipairs({ "account", "message", "error" }) do
-			if row[name] and row[name] ~= "" then
-				parts[#parts + 1] = tostring(row[name])
+			local value = shown(row, name)
+			if value and value ~= "" then
+				parts[#parts + 1] = tostring(value)
 			end
 		end
 		if row.ms then
-			parts[#parts + 1] = tostring(row.ms) .. " ms"
+			parts[#parts + 1] = t("result_ms", tostring(row.ms))
 		end
 		return table.concat(parts, "  ")
 	end
@@ -219,7 +229,7 @@ function M.new(deps)
 			local p = obs.obs_properties_get(state.props, name)
 			obs.obs_property_set_visible(p, row ~= nil)
 			if row then
-				obs.obs_property_set_description(p, tostring(row.target or t("check")))
+				obs.obs_property_set_description(p, tostring(shown(row, "target") or t("check")))
 				set_row(state, name, row_text(row))
 				obs.obs_property_text_set_info_type(
 					p,
@@ -392,7 +402,7 @@ function M.new(deps)
 		value_property(props, "cobs.manual_caption", field("manual_caption"))
 		button(props, "cobs.post", "post", handler("post"))
 		for index = 1, RESULT_ROWS do
-			info(state, props, "cobs.result." .. index, "check", "…")
+			info(state, props, "cobs.result." .. index, "check", t("result_pending"))
 		end
 		-- Navigator
 		local section = value_property(
