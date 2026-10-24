@@ -1,9 +1,23 @@
 # Add a custom destination
 
-Select **Custom platforms**, then add names to the editable list. Names use lower-case letters, digits and dashes. A name cannot be one of the fourteen built-in destinations. Select a name in **Custom platform to configure** to edit its settings, and tick it in **Post to**.
+Choose **Custom platforms** in **Section**, then add names to **Custom platform names**. A name uses lower-case letters, digits and dashes, and starts with a letter or a digit. It cannot be one of the fourteen built-in platforms. Select a name in **Custom platform to configure** to edit its settings, and tick it in **Post to**.
 
-Each name expands the 15 [custom platform settings](https://github.com/yohimik/crier/blob/v1.1.1/docs/configuration/publish/custom.md): enabled, command, ping command, caption, kinds, format, needs URL, timeout, overlays, dimensions, fit, background, attachment limit and environment entries. Enter environment entries as `VAR=value`; those become the custom command's environment map.
+Each name gets the 15 [custom platform settings](https://github.com/yohimik/crier/blob/v1.1.1/docs/configuration/publish/custom.md), keyed `publish.custom.<name>.*`:
 
-The publish command receives the artifact through [crier's custom command contract](https://github.com/yohimik/crier/blob/v1.1.1/docs/publishing/custom.md). Use a ping command that checks account access without publishing. Choose kinds that describe what the command actually accepts, especially before enabling replay posts.
+| Setting | Notes |
+| --- | --- |
+| `enabled` | the name's checkbox in **Post to** |
+| `command`, `ping-command` | the publish command, and one that checks access without publishing |
+| `caption` | overrides the trigger's caption for this destination |
+| `kinds` | what the command accepts; crier's default is `image` only |
+| `format`, `width`, `height`, `fit`, `fit-background`, `overlay`, `max-attachments` | the shape of what it receives |
+| `needs-url`, `timeout` | whether crier stages the artifact and passes `CRIER_URL`, and how long the command may run |
+| `env` | an editable list of `VAR=value` entries, the command's environment |
 
-Removing a name removes its destination from future model snapshots. Queued jobs keep their original snapshot. A renamed destination is a new configuration namespace; copy the settings you want to retain.
+`VAR` is a letter or an underscore followed by letters, digits or underscores. Any other entry is skipped with the warning `Invalid custom environment entry for <name>`.
+
+The command receives the artifact through [crier's custom command contract](https://github.com/yohimik/crier/blob/v1.1.1/docs/publishing/custom.md#the-contract). List `video` in `kinds` only when the command takes video: a clip post from **When a replay is saved** leaves out every custom destination whose `kinds` lacks it.
+
+Removing a name removes its destination from later posts. Posts already queued keep the settings they were queued with. A renamed destination starts with fresh settings; copy the ones you want to keep.
+
+With a base file, a custom destination defined only in that file is disabled for every post. Add its name here and tick it to post to it; the base file still supplies the settings you leave untouched.
