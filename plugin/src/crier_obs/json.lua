@@ -18,6 +18,7 @@ local escapes = {
   ["\r"] = "\\r",
   ["\t"] = "\\t",
 }
+local unescapes = { ['"'] = '"', ["\\"] = "\\", ["/"] = "/", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
 local function quote(s)
   local escaped = s:gsub('[%z\1-\31\\"]', function(c)
     return escapes[c] or string.format("\\u%04x", c:byte())
@@ -124,9 +125,8 @@ function M.decode(s)
       if c == "\\" then
         local e = s:sub(i, i)
         i = i + 1
-        local simple = { ['"'] = '"', ["\\"] = "\\", ["/"] = "/", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
-        if simple[e] then
-          out[#out + 1] = simple[e]
+        if unescapes[e] then
+          out[#out + 1] = unescapes[e]
         elseif e == "u" then
           local h = s:sub(i, i + 3)
           if not h:match("^%x%x%x%x$") then

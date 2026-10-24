@@ -64,7 +64,8 @@ function M.parse(result, log)
 			end
 		end
 		local noun = #planned == 1 and " post" or " posts"
-		summary = "Dry run planned " .. #planned .. noun .. (#planned > 0 and (": " .. table.concat(planned, ", ")) or "")
+		local listed = #planned > 0 and (": " .. table.concat(planned, ", ")) or ""
+		summary = "Dry run planned " .. #planned .. noun .. listed
 	end
 	return {
 		code = result.code,
