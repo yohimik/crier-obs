@@ -1,4 +1,5 @@
--- Bundled default template; mirrored from plugin/templates/live.html.
+-- The default template for src/ runs. tools/bundle.lua embeds templates/live.html instead, and
+-- spec/unit/templates_spec.lua fails when this copy differs from that file by a byte.
 local live = [====[
 <!doctype html>
 <html><head><meta charset="utf-8"><style>
