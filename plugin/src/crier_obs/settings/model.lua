@@ -11,10 +11,10 @@ M.trigger_defaults = {
   replay = { enabled = false, caption = "Clip: {{ .title }}" },
 }
 M.fields = {
-  { key = "section", kind = "string", default = "platforms", label = "Section" },
-  { key = "platform", kind = "string", default = "telegram", label = "Platform to configure" },
-  { key = "custom_platform", kind = "string", default = "", label = "Custom platform to configure" },
-  { key = "custom_names", kind = "list", default = {}, label = "Custom platform names" },
+  { key = "section", kind = "string", default = "platforms", label = "field_section" },
+  { key = "platform", kind = "string", default = "telegram", label = "field_platform" },
+  { key = "custom_platform", kind = "string", default = "", label = "field_custom_platform" },
+  { key = "custom_names", kind = "list", default = {}, label = "field_custom_names" },
   {
     key = "interval_minutes",
     kind = "int",
@@ -22,16 +22,16 @@ M.fields = {
     min = 1,
     max = 1440,
     step = 1,
-    label = "Interval in minutes",
+    label = "field_interval_minutes",
   },
-  { key = "title", kind = "string", default = "", label = "Stream title" },
-  { key = "game", kind = "string", default = "", label = "Game" },
-  { key = "url", kind = "string", default = "", label = "Stream URL" },
-  { key = "custom_fields", kind = "list", default = {}, label = "Custom data fields (key=value)" },
-  { key = "base_config", kind = "string", widget = "path", default = "", label = "Base configuration file" },
-  { key = "crier_path", kind = "string", widget = "path", default = "", label = "crier path override" },
-  { key = "credential_set", kind = "string", default = "default", label = "Credential set" },
-  { key = "timeout", kind = "int", default = 900, min = 1, max = 86400, step = 1, label = "Run timeout in seconds" },
+  { key = "title", kind = "string", default = "", label = "field_title" },
+  { key = "game", kind = "string", default = "", label = "field_game" },
+  { key = "url", kind = "string", default = "", label = "field_url" },
+  { key = "custom_fields", kind = "list", default = {}, label = "field_custom_fields" },
+  { key = "base_config", kind = "string", widget = "path", default = "", label = "field_base_config" },
+  { key = "crier_path", kind = "string", widget = "path", default = "", label = "field_crier_path" },
+  { key = "credential_set", kind = "string", default = "default", label = "field_credential_set" },
+  { key = "timeout", kind = "int", default = 900, min = 1, max = 86400, step = 1, label = "field_timeout" },
   {
     key = "retention_days",
     kind = "int",
@@ -39,7 +39,7 @@ M.fields = {
     min = 1,
     max = 3650,
     step = 1,
-    label = "Keep run folders for days",
+    label = "field_retention_days",
   },
   {
     key = "retention_count",
@@ -48,10 +48,10 @@ M.fields = {
     min = 1,
     max = 10000,
     step = 1,
-    label = "Maximum run folders",
+    label = "field_retention_count",
   },
-  { key = "debug", kind = "bool", default = false, label = "Debug logging" },
-  { key = "manual_caption", kind = "string", default = "🔴 Live now: {{ .title }}", label = "Manual caption" },
+  { key = "debug", kind = "bool", default = false, label = "field_debug" },
+  { key = "manual_caption", kind = "string", default = "🔴 Live now: {{ .title }}", label = "field_manual_caption" },
 }
 function M.equal(a, b)
   if type(a) ~= type(b) then
@@ -131,7 +131,6 @@ function M.new(deps)
       }
     end
     model.mode = model.base_config ~= "" and "advanced" or "generated"
-    model.paths = { base_config = model.base_config, crier_path = model.crier_path }
     return model
   end
   self.diff = M.diff
