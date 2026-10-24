@@ -278,6 +278,40 @@ describe("OBS script properties", function()
 		assert.equal("Update crier", props.by_name["cobs.install"].label)
 	end)
 
+	it("heads the Status and Posting blocks", function()
+		local props = properties.new({ obs = obs, model = model }).build(data)
+		local at = {}
+		for index, p in ipairs(props.ordered) do
+			at[p.name] = index
+		end
+		assert.equal(1, at["cobs.heading.status"])
+		assert.same({ nil, "Status" }, { obs.render_info(props.by_name["cobs.heading.status"], data) })
+		assert.equal(2, at["cobs.status.crier"])
+		assert.equal(at["cobs.trigger.start.enabled"] - 1, at["cobs.heading.posting"])
+		assert.is_true(at["cobs.heading.posting"] > at["cobs.status.logs"])
+		assert.same({ nil, "Posting" }, { obs.render_info(props.by_name["cobs.heading.posting"], data) })
+	end)
+
+	it("links the staging guide to crier's staging docs at the pinned tag", function()
+		local props = properties.new({ obs = obs, model = model }).build(data)
+		local tag = require("crier_obs.registry.meta").tag
+		assert.equal(
+			"https://github.com/yohimik/crier/blob/" .. tag .. "/docs/staging/README.md",
+			props.by_name["cobs.guide.staging"].url
+		)
+	end)
+
+	it("starts the tunnel guidance with Stage mode server, and points S3 users at Stage mode s3", function()
+		local props = properties.new({ obs = obs, model = model }).build(data)
+		local _, guidance = obs.render_info(props.by_name["cobs.tunnel_guidance"], data)
+		local server = guidance:find("set Stage mode (stage.mode) to server", 1, true)
+		assert.is_truthy(server)
+		assert.is_true(server < guidance:find("ngrok:", 1, true))
+		assert.is_true(server < guidance:find("zrok:", 1, true))
+		assert.is_truthy(guidance:find("leave stage.server.public-url empty", 1, true))
+		assert.is_truthy(guidance:find("set Stage mode (stage.mode) to s3", 1, true))
+	end)
+
 	it("gives every numeric field a 32-bit range holding its default", function()
 		local props = properties.new({ obs = obs, model = model }).build(data)
 		local checked = 0

@@ -791,6 +791,25 @@ function M.new(deps)
 		self.scheduler = scheduler
 		self.queue = queue
 	end
+	-- Values remembered for the live session under keys the new settings no longer use (an unticked
+	-- platform, the previous credential set) leave the credential service's cache as well.
+	local function release_unused(previous, current)
+		local kept = {}
+		if previous.credential_set == current.credential_set then
+			for _, key in ipairs(builder.needs_secrets(current)) do
+				kept[key] = true
+			end
+		end
+		local dropped = {}
+		for _, key in ipairs(builder.needs_secrets(previous)) do
+			if not kept[key] then
+				dropped[#dropped + 1] = key
+			end
+		end
+		if #dropped > 0 then
+			secrets.clear_cache(previous.credential_set, dropped)
+		end
+	end
 	function self.update(data)
 		local next_model = model_port.snapshot(data)
 		local changes = models.diff(model, next_model)
@@ -816,6 +835,7 @@ function M.new(deps)
 				scheduler.stream.cache = {}
 				scheduler.stream.cache_ready = false
 			end
+			release_unused(model, next_model)
 		end
 		model = next_model
 		refresh_frontend()

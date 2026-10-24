@@ -169,6 +169,37 @@ describe("credential service", function()
 		assert.equal("unavailable", s.status("default", "publish.telegram.token").state)
 		assert.is_nil(fs.files["/state/secrets/index.json"])
 	end)
+	it("marks a credential whose indexed store is unavailable as bound, and an unindexed one as not", function()
+		local fs, b = memory_fs(), backend("macos")
+		fs.files["/state/secrets/index.json"] = json.encode({
+			["default/publish.telegram.token"] = "linux",
+			["default/publish.discord.webhook-url"] = "macos",
+		})
+		local exists = b.exists
+		function b.exists(account, callback)
+			if account == "default/publish.telegram.token" then
+				return exists(account, callback)
+			end
+			callback(nil, { kind = "unavailable", message = "Credential store is locked; unlock it and try again" })
+		end
+		local s = new({ fs = fs, state_dir = "/state", platform = "OSX", backend = b })
+		for _, key in ipairs({ "publish.telegram.token", "publish.discord.webhook-url", "publish.vk.token" }) do
+			s.status("default", key)
+		end
+		drain(s)
+		local gone = s.status("default", "publish.telegram.token")
+		assert.equal("unavailable", gone.state)
+		assert.is_true(gone.bound)
+		assert.equal("Secret Service", gone.reason)
+		assert.equal("keyring_linux", gone.reason_text.key)
+		local locked = s.status("default", "publish.discord.webhook-url")
+		assert.equal("unavailable", locked.state)
+		assert.is_true(locked.bound)
+		assert.equal("Credential store is locked; unlock it and try again", locked.message)
+		local unbound = s.status("default", "publish.vk.token")
+		assert.equal("unavailable", unbound.state)
+		assert.is_nil(unbound.bound)
+	end)
 	it("refuses unavailable indexed backends without silently writing fallback files", function()
 		local fs = memory_fs()
 		fs.files["/state/secrets/index.json"] = json.encode({ ["default/publish.telegram.token"] = "macos" })

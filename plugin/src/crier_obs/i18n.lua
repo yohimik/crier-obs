@@ -1,8 +1,11 @@
 local M = {}
-local guidance = "Instagram needs a public URL. ngrok: install it, sign up, run ngrok config add-authtoken <token>, "
-guidance = guidance .. "then select ngrok. The free tier interstitial breaks Meta fetching; use a paid plan or zrok. "
-guidance = guidance .. "zrok: install it, run zrok invite and zrok enable <token>, then select zrok. "
-guidance = guidance .. "S3 is an alternative without a tunnel."
+-- crier starts a tunnel only with stage.mode server and no stage.server.public-url of its own.
+local guidance = "Instagram needs a public URL. For a tunnel, first set Stage mode (stage.mode) to server and "
+guidance = guidance .. "leave stage.server.public-url empty. ngrok: install it, sign up, run ngrok config "
+guidance = guidance .. "add-authtoken <token>, then set stage.server.tunnel.mode to ngrok. The free tier interstitial "
+guidance = guidance .. "breaks Meta fetching; use a paid plan or zrok. zrok: install it, run zrok invite and zrok "
+guidance = guidance .. "enable <token>, then set stage.server.tunnel.mode to zrok. S3 is an alternative without a "
+guidance = guidance .. "tunnel: set Stage mode (stage.mode) to s3 and fill in the stage.s3 settings."
 local flatpak_bridge = "Flatpak host bridge requires flatpak-spawn --env-fd support and shared home paths; "
 flatpak_bridge = flatpak_bridge .. "Check setup verifies the host command"
 
@@ -135,6 +138,7 @@ M.strings = {
 		check_not_found = "Cannot find %s",
 		check_base_changed = "Base configuration changed while it was being checked",
 		check_failed_code = "Check failed with code %s",
+		check_tunnel_needs_server = "The %s tunnel starts only when Stage mode (stage.mode) is server",
 		sandbox_snap = "Snap may isolate host tools and credential services; use a native OBS package",
 		sandbox_flatpak_missing = "Flatpak host access is unavailable: flatpak-spawn is missing; use a native OBS package",
 		sandbox_flatpak_bridge = flatpak_bridge,

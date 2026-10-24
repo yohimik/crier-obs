@@ -223,6 +223,52 @@ describe("credential UI and publishing security", function()
 		assert.equal("unavailable", p.secrets.status("default", "publish.telegram.token").state)
 		cleanup(p, settings)
 	end)
+	it("shows a credential kept in an unavailable store as stored, and an unindexed one as not stored", function()
+		local p, settings, backend = setup(true)
+		obs.obs_data_set_bool(settings, "publish.discord.enabled", true)
+		p.update(settings)
+		local exists = backend.exists
+		function backend.exists(account, cb)
+			if account == "default/publish.discord.webhook-url" then
+				return cb(
+					nil,
+					{ kind = "unavailable", message = "Credential store is locked; unlock it and try again" }
+				)
+			end
+			return exists(account, cb)
+		end
+		p.properties()
+		pump(p)
+		local props = p.properties()
+		local function row(key)
+			return select(2, obs.render_info(props.by_name[key .. ".status"], settings))
+		end
+		assert.equal("stored in keyring (keyring unavailable: missing-keyring)", row("publish.telegram.token"))
+		assert.equal(
+			"not stored: Credential store is locked; unlock it and try again",
+			row("publish.discord.webhook-url")
+		)
+		cleanup(p, settings)
+	end)
+	it("drops the credentials of platforms unticked mid-stream from the service cache", function()
+		local p, settings, backend = setup()
+		backend.values["default/publish.telegram.token"] = "TELEGRAM_SECRET"
+		backend.values["default/publish.discord.webhook-url"] = "DISCORD_SECRET"
+		obs.obs_data_set_bool(settings, "publish.discord.enabled", true)
+		p.update(settings)
+		obs.emit(obs.OBS_FRONTEND_EVENT_STREAMING_STARTED)
+		pump(p)
+		assert.equal("TELEGRAM_SECRET", p.secrets.cache["default/publish.telegram.token"])
+		assert.equal("DISCORD_SECRET", p.secrets.cache["default/publish.discord.webhook-url"])
+		obs.obs_data_set_bool(settings, "publish.discord.enabled", false)
+		p.update(settings)
+		assert.is_nil(p.secrets.cache["default/publish.discord.webhook-url"])
+		assert.equal("TELEGRAM_SECRET", p.secrets.cache["default/publish.telegram.token"])
+		pump(p)
+		assert.is_nil(p.scheduler.stream.cache["publish.discord.webhook-url"])
+		assert.equal("TELEGRAM_SECRET", p.scheduler.stream.cache["publish.telegram.token"])
+		cleanup(p, settings)
+	end)
 	it("does not put an old credential-set resolution back into the current session cache", function()
 		local p, settings, backend = setup()
 		backend.values["default/publish.telegram.token"] = "OLD_SECRET"

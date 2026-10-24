@@ -108,11 +108,16 @@ function M.new(deps)
 		end
 		job.state, job.value, job.error = err and "failed" or "done", value, err
 		if err then
+			-- bound: index.json names the store, so the value is still in it while it is unavailable.
+			local unavailable_now = err.kind == "unavailable"
 			statuses[job.account] = {
-				state = err.kind == "unavailable" and "unavailable" or "not stored",
+				state = unavailable_now and "unavailable" or "not stored",
+				bound = unavailable_now and index[job.account] ~= nil or nil,
 				backend = backend,
 				message = err.message,
 				message_text = err.message_text,
+				reason = err.reason,
+				reason_text = err.reason_text,
 			}
 		elseif job.operation == "forget" then
 			statuses[job.account] = { state = "not stored" }
@@ -268,7 +273,17 @@ function M.new(deps)
 		local account = account_for(set, key)
 		return account and pending[account]
 	end
-	function self.clear_cache()
+	-- Forgets remembered values: the given keys of a credential set, or every value.
+	function self.clear_cache(set, keys)
+		if keys then
+			for _, key in ipairs(keys) do
+				local account = account_for(set, key)
+				if account then
+					cache[account] = nil
+				end
+			end
+			return
+		end
 		for key in pairs(cache) do
 			cache[key] = nil
 		end
@@ -298,6 +313,16 @@ function M.new(deps)
 	local function unavailable(name)
 		return not backends[name] or (name == "linux" and not linux_available)
 	end
+	-- A store that cannot be reached now; reason names it for the credential status row.
+	local function out_of_reach(key, name)
+		local err = failure("unavailable", key)
+		if LABELS[name] then
+			i18n.set(err, "reason", LABELS[name])
+		else
+			err.reason = name
+		end
+		return err
+	end
 	-- Walks the bound backend, or the primary then the file store, until one has the account.
 	-- read(backend, account, done) is the backend's lookup or exists.
 	local function search(job, read, found)
@@ -313,7 +338,7 @@ function M.new(deps)
 			end
 			if unavailable(name) then
 				if bound then
-					finish(job, nil, failure("unavailable", "credential_backend_locked"), name)
+					finish(job, nil, out_of_reach("credential_backend_locked", name), name)
 				else
 					next_backend()
 				end
@@ -357,7 +382,7 @@ function M.new(deps)
 	local function commit(job)
 		local name = index[job.account] or primary
 		if unavailable(name) then
-			finish(job, nil, failure("unavailable", "credential_backend_unsaved"), name)
+			finish(job, nil, out_of_reach("credential_backend_unsaved", name), name)
 			return
 		end
 		local backend = backends[name]

@@ -142,6 +142,26 @@ describe("setup base inspection recovery", function()
 			end
 		end
 	end)
+	it("warns that a tunnel mode does nothing unless Stage mode is server", function()
+		for _, case in ipairs({ { "s3", true }, { "none", true }, { "url", true }, { "server", false } }) do
+			local ping, model, plan = fixture()
+			model.values["stage.server.tunnel.mode"] = "zrok"
+			model.values["stage.mode"] = case[1]
+			assert(ping.start(model, "/crier", plan))
+			local warning
+			for _, row in ipairs(ping.rows()) do
+				if row.target == "tunnel" and row.warning then
+					warning = row.message
+				end
+			end
+			if case[2] then
+				assert.equal("The zrok tunnel starts only when Stage mode (stage.mode) is server", warning, case[1])
+			else
+				assert.is_nil(warning)
+			end
+			ping.detach()
+		end
+	end)
 	it("checks the fingerprint again after a delayed credential lookup", function()
 		local ping, model, plan, spawned, _, change, getcallback = fixture({ delay = true })
 		ping.start(model, "/crier", plan)

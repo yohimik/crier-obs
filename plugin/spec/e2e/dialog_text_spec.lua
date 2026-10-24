@@ -475,6 +475,7 @@ describe("dialog row text", function()
 			adopt = { { pid = 7, event = "start", created_at = os.time() } },
 			dynamic = {
 				"/usr/local/bin/zrok",
+				"zrok",
 				"ffmpeg",
 				"telegram",
 				"chat id is missing",
@@ -518,6 +519,7 @@ describe("dialog row text", function()
 			result("result_ok", say("check_staging_disabled")),
 			result("result_failed", say("check_not_found", "ffmpeg")),
 			result("result_ok", "/usr/local/bin/zrok"),
+			result("result_warning", say("check_tunnel_needs_server", "zrok")),
 			result("result_ok", say("keyring_macos")),
 			result("result_warning", "chat id is missing"),
 			result("result_ok", "@crier_bot", "token valid", say("result_ms", "42")),

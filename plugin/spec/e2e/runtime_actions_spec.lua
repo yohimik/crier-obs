@@ -286,12 +286,18 @@ describe("dialog actions and recovery", function()
 		end
 		assert.is_true(dry)
 		local rows = p.status().results
-		local found = {}
+		local found, warnings = {}, {}
 		for _, row in ipairs(rows) do
-			found[row.target] = row
+			if row.warning then
+				warnings[row.target] = row
+			else
+				found[row.target] = row
+			end
 		end
 		assert.is_true(found.ffmpeg.ok)
 		assert.is_true(found.tunnel.ok)
+		-- Stage mode is still none, so the tunnel the dialog names would never start.
+		assert.equal("The zrok tunnel starts only when Stage mode (stage.mode) is server", warnings.tunnel.message)
 		assert.equal("crier ready", p.status().crier)
 		obs.obs_data_set_string(data, "cobs.crier_path", "/changed")
 		p.update(data)

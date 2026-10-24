@@ -170,7 +170,7 @@ function M.new(deps)
 		elseif status.state == "checking" or status.state == "saving" or status.state == "forgetting" then
 			return t(status.state)
 		elseif status.state == "unavailable" and status.bound then
-			return t("stored_unavailable", shown(status) or "")
+			return t("stored_unavailable", shown(status, "reason") or shown(status) or "")
 		elseif status.message and status.message ~= "" then
 			return t("not_stored_reason", shown(status))
 		end
@@ -355,7 +355,8 @@ function M.new(deps)
 			return p
 		end
 		local docs = "https://github.com/yohimik/crier/blob/" .. meta.tag .. "/docs/"
-		-- Status
+		-- Status. A heading is an info row with no label, so its text spans the row.
+		info(state, props, "cobs.heading.status", nil, t("status"))
 		info(state, props, "cobs.status.crier", "crier_label", t("crier_missing"))
 		button(props, "cobs.install", "install", handler("install"))
 		url(props, "cobs.install_docs", "install_docs", docs .. "operations/install.md")
@@ -363,6 +364,7 @@ function M.new(deps)
 		info(state, props, "cobs.status.last_run", "last_run_label", t("no_posts"))
 		info(state, props, "cobs.status.logs", "logs_label", t("logs_unknown"))
 		-- Posting
+		info(state, props, "cobs.heading.posting", nil, t("posting"))
 		for _, event in ipairs(TRIGGERS) do
 			local label = "trigger_" .. event
 			describe(
@@ -462,7 +464,7 @@ function M.new(deps)
 					in_section("staging")
 				)
 				extra(
-					url(props, "cobs.guide.staging", "staging_guide", docs .. "configuration/stage/README.md"),
+					url(props, "cobs.guide.staging", "staging_guide", docs .. "staging/README.md"),
 					in_section("staging")
 				)
 				extra(

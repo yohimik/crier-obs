@@ -116,6 +116,11 @@ function M.new(deps)
 				rows[#rows + 1] = entry
 			end
 		end
+		-- crier starts a tunnel only for its stage server; under any other Stage mode it never runs.
+		local tunnel = model.values["stage.server.tunnel.mode"]
+		if tunnel and tunnel ~= "" and tunnel ~= "none" and model.values["stage.mode"] ~= "server" then
+			rows[#rows + 1] = own_row("tunnel", { warning = true }, "check_tunnel_needs_server", tostring(tunnel))
+		end
 		-- Config and explicit enables match the snapshot checked by this request.
 		for path, data in pairs(plan.files or {}) do
 			local ok, e = deps.fs.write(path, data)
