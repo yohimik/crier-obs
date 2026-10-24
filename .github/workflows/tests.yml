@@ -39,7 +39,9 @@ jobs:
           luarocks "${args[@]}" --local install luacheck 1.2.0
           echo "$HOME/.luarocks/bin" >> "$GITHUB_PATH"
 
+      # Pinned like release.yml: the gates change behaviour only when this version is bumped on purpose.
       - uses: yohimik/dispat@v1
+        with: {version: "1.10.0"}
       - name: Required gates
         shell: bash
         env:
