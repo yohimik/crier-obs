@@ -1,23 +1,39 @@
 local ffi = require("ffi")
+local host = require("crier_obs.proc.host")
 local M = {}
+local function sorted_names(t)
+	local names = {}
+	for name in pairs(t or {}) do
+		names[#names + 1] = name
+	end
+	table.sort(names)
+	return names
+end
 function M.new(deps)
 	deps = deps or {}
-	local env = deps.env or {}
+	local platform = deps.platform or (deps.env or {}).os or ffi.os
+	local env = deps.env or require("crier_obs.ports.env").new({ platform = platform, C = deps.C })
 	local clock = deps.clock or {}
-	local windows = (deps.platform or env.os or ffi.os) == "Windows"
-	local backend = deps.backend or require(windows and "crier_obs.proc.windows" or "crier_obs.proc.posix").new(deps)
+	local windows = platform == "Windows"
+	local backend = deps.backend
+		or require(windows and "crier_obs.proc.windows" or "crier_obs.proc.posix").new({
+			C = deps.C,
+			platform = platform,
+			arch = deps.arch,
+			env = env,
+			fs = deps.fs,
+			clock = deps.clock,
+			before_spawn = deps.before_spawn,
+			observer_timeout = deps.observer_timeout,
+		})
 	local function now()
 		return clock.now_mono and clock.now_mono() or 0
 	end
-	local function inherited()
-		if env.inherited then
-			return env.inherited()
+	local function debug(message)
+		if deps.log then
+			deps.log.debug(message)
 		end
-		return require(windows and "crier_obs.proc.windows" or "crier_obs.proc.posix").inherited(deps.C)
 	end
-  local function debug(message)
-    if deps.log and deps.log.debug then deps.log.debug(message) end
-  end
 	local self = {}
 	function self.spawn(plan)
 		local copy = {}
@@ -28,7 +44,7 @@ function M.new(deps)
 		local function name(key)
 			return windows and key:upper() or key
 		end
-		for k, v in pairs(inherited()) do
+		for k, v in pairs(env.inherited()) do
 			k = name(k)
 			if not k:match("^CRIER_") then
 				copy.env[k] = v
@@ -44,20 +60,28 @@ function M.new(deps)
 		for k, v in pairs(plan.env or {}) do
 			copy.env[name(k)] = v
 		end
-		if env.prepare_host then
-			local prepared, host_error = env.prepare_host(copy, deps.fs)
-			if not prepared then
-				return nil, host_error
-			end
-			copy = prepared
+		local prepared, host_error = host.prepare(copy, env, deps.fs)
+		if not prepared then
+			return nil, host_error
 		end
-    debug("spawning "..tostring(plan.kind or "process"))
+		copy = prepared
+		local kind = tostring(plan.kind or "process")
+		-- Credentials travel only in the environment, so it is logged by name; every line is scrubbed.
+		local names = table.concat(sorted_names(plan.env), ", ")
+		debug(
+			"spawning "
+				.. kind
+				.. ": "
+				.. table.concat({ tostring(plan.executable or plan.command), unpack(plan.args or {}) }, " ")
+				.. "; job environment: "
+				.. (names ~= "" and names or "none")
+		)
 		local p, e = backend.spawn(copy)
 		if not p then
-      debug("process spawn failed")
+			debug(kind .. " spawn failed")
 			return nil, e
 		end
-    debug("process started pid "..tostring(p.pid or "unknown"))
+		debug(kind .. " started pid " .. tostring(p.pid or "unknown"))
 		local poll, terminate, kill = p.poll, p.terminate, p.kill
 		local started = now()
 		local term_at, result
@@ -67,22 +91,31 @@ function M.new(deps)
 			end
 			local r, err = poll()
 			if r then
-        debug("process finished with code "..tostring(r.code))
+				debug(
+					kind
+						.. " finished with code "
+						.. tostring(r.code)
+						.. " (stdout "
+						.. #(r.stdout or "")
+						.. " bytes, stderr "
+						.. #(r.stderr or "")
+						.. " bytes)"
+				)
 				r.timed_out = term_at ~= nil
 				result = r
 				return r
 			end
 			if err then
-        debug("process poll failed")
+				debug(kind .. " poll failed")
 				return nil, err
 			end
 			local t = now()
 			if plan.timeout and t - started >= plan.timeout and not term_at then
 				term_at = t
-        debug("terminating process after timeout")
+				debug("terminating " .. kind .. " after timeout")
 				terminate()
 			elseif term_at and t - term_at >= (plan.kill_grace or 10) then
-        debug("killing process after timeout grace")
+				debug("killing " .. kind .. " after timeout grace")
 				kill()
 				term_at = t
 			end
@@ -99,6 +132,17 @@ function M.new(deps)
 			return backend.adopt(record)
 		end
 		return nil, { kind = "process", message = "This platform cannot adopt an existing process" }
+	end
+	-- Every process this spawner hands out supports cancel(): it stops the process and returns true,
+	-- or a pending record whose wrapper is still being reaped.
+	function self.stop(process)
+		return process.cancel()
+	end
+	function self.current_pid()
+		return backend.current_pid()
+	end
+	function self.alive(pid)
+		return backend.alive(pid)
 	end
 	return self
 end

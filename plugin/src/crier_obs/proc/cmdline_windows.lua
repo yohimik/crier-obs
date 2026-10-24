@@ -52,7 +52,4 @@ function M.powershell(system_root)
 	end
 	return (system_root:gsub("[\\/]+$", "")) .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 end
-M.escape_arg = M.quote
-M.build = M.command
-M.env_block = M.environment
 return M

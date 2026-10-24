@@ -133,6 +133,76 @@ describe("POSIX native API failure contracts #posix", function()
 		assert.is_nil(child)
 		assert.equal(95, e.errno)
 	end)
+	it("closes every listed descriptor above the standard streams when the libc has no closefrom", function()
+		for _, directory in ipairs({ "/proc/self/fd", "/dev/fd" }) do
+			local C, actions = fake({})
+			local globbed = {}
+			local fs = {
+				glob = function(pattern)
+					globbed[#globbed + 1] = pattern
+					if pattern ~= directory .. "/*" then
+						return {}
+					end
+					local out = {}
+					for _, fd in ipairs({ 0, 1, 2, 3, 9, 12, 31 }) do
+						out[#out + 1] = directory .. "/" .. fd
+					end
+					return out
+				end,
+			}
+			local p = posix.new({ C = C, platform = "Linux", fs = fs })
+			assert(p.spawn({ executable = "/bin/crier" }))
+			local closed = {}
+			for _, a in ipairs(actions) do
+				if a[1] == "close" then
+					closed[#closed + 1] = a[2]
+				end
+			end
+			assert.same({ 3, 9, 12, 31 }, closed)
+			assert.equal("/proc/self/fd/*", globbed[1])
+		end
+	end)
+	it("reads the child pid only when a record needs it, never on every heartbeat", function()
+		local reads = {}
+		local fs = {
+			read = function(path)
+				reads[path] = (reads[path] or 0) + 1
+				return path == "/run/pid" and "124" or nil
+			end,
+		}
+		local p = posix.new({ C = fake({ status = { false } }), platform = "OSX", fs = fs })
+		local child = assert(p.spawn({ executable = "/bin/crier", pid_path = "/run/pid", status_path = "/run/status" }))
+		for _ = 1, 20 do
+			assert.is_nil(child.poll())
+		end
+		assert.is_nil(reads["/run/pid"])
+		local record = assert(child.detach())
+		assert.equal(124, record.child_pid)
+		assert.equal(1, reads["/run/pid"])
+	end)
+	it("never leaves argument or environment bytes in memory when spawning fails before the call", function()
+		local allocated = {}
+		local original = ffi.new
+		ffi.new = function(ct, ...)
+			local value = original(ct, ...)
+			if ct == "char[?]" then
+				allocated[#allocated + 1] = value
+			end
+			return value
+		end
+		local ok, err = pcall(function()
+			for _, options in ipairs({ { init = 12 }, { attr = 12 }, { action = 9 }, { spawn = 2 } }) do
+				allocated = {}
+				local native = posix.new({ C = fake(options), platform = "OSX" })
+				assert.is_nil(native.spawn({ executable = "/bin/crier", env = { CRIER_PUBLISH_X_TOKEN = "TOPSECRET" } }))
+				for _, buffer in ipairs(allocated) do
+					assert.is_nil(ffi.string(buffer, ffi.sizeof(buffer)):find("TOPSECRET", 1, true))
+				end
+			end
+		end)
+		ffi.new = original
+		assert(ok, err)
+	end)
 	it("handles EINTR, native poll failure, ECHILD status adoption and signals", function()
 		local p = posix.new({ C = fake({ status = { { errno = 4 }, { errno = 22 } } }), platform = "OSX" })
 		local child = assert(p.spawn({ executable = "/bin/crier" }))

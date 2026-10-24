@@ -13,7 +13,7 @@ typedef struct { COBS_HANDLE hProcess,hThread; uint32_t dwProcessId,dwThreadId; 
 uint16_t *__stdcall GetEnvironmentStringsW(void); int __stdcall FreeEnvironmentStringsW(uint16_t*);
 COBS_HANDLE __stdcall OpenProcess(uint32_t,int,uint32_t); COBS_HANDLE __stdcall OpenJobObjectW(uint32_t,int,const uint16_t*);
 uint32_t __stdcall GetLastError(void); int __stdcall CloseHandle(COBS_HANDLE);
-COBS_HANDLE __stdcall GetCurrentProcess(void);
+COBS_HANDLE __stdcall GetCurrentProcess(void); uint32_t __stdcall GetCurrentProcessId(void);
 int __stdcall DuplicateHandle(COBS_HANDLE,COBS_HANDLE,COBS_HANDLE,COBS_HANDLE*,uint32_t,int,uint32_t);
 COBS_HANDLE __stdcall CreateFileW(const uint16_t*,uint32_t,uint32_t,COBS_SECURITY_ATTRIBUTES*,uint32_t,uint32_t,COBS_HANDLE);
 int __stdcall CreatePipe(COBS_HANDLE*,COBS_HANDLE*,COBS_SECURITY_ATTRIBUTES*,uint32_t);
@@ -66,34 +66,28 @@ try {
 } finally { [void][CrierProcessWatch]::CloseHandle($h) }
 ]=]
 M.observer_script = OBSERVE
-function M.inherited(C)
-  C = C or ffi.C
-  local block = C.GetEnvironmentStringsW()
-  local out = {}
-  if block == nil then
-    return out
-  end
-  local i = 0
-  while block[i] ~= 0 do
-    local first = i
-    while block[i] ~= 0 do
-      i = i + 1
-    end
-    local text = utf16.decode(ffi.string(block + first, (i - first) * 2))
-    local name, value = text:match("^(=?[^=]+)=(.*)$")
-    if name then
-      out[name] = value
-    end
-    i = i + 1
-  end
-  C.FreeEnvironmentStringsW(block)
-  return out
-end
 function M.new(deps)
   deps = deps or {}
   local C = deps.C or ffi.C
+  local env = deps.env or require("crier_obs.ports.env").new({ platform = "Windows", C = C })
   local self = {}
   local fs = deps.fs or {}
+  function self.current_pid()
+    return tonumber(C.GetCurrentProcessId())
+  end
+  -- ERROR_INVALID_PARAMETER and ERROR_NOT_FOUND mean no such process; any other failure (access
+  -- denied) means it exists.
+  function self.alive(pid)
+    local h = C.OpenProcess(0x1000, 0, pid)
+    if h == nil then
+      local code = tonumber(C.GetLastError())
+      return code ~= 87 and code ~= 1168
+    end
+    local code = ffi.new("uint32_t[1]")
+    local running = C.GetExitCodeProcess(h, code) ~= 0 and tonumber(code[0]) == 259
+    C.CloseHandle(h)
+    return running
+  end
   function self.spawn(plan)
     local keep, handles = {}, {}
     local attrs
@@ -257,15 +251,15 @@ function M.new(deps)
       cleanup()
       return nil, be
     end
-    local env = ffi.new("uint16_t[?]", #bytes / 2)
-    ffi.copy(env, bytes, #bytes)
-    keep[#keep + 1] = env
+    local block = ffi.new("uint16_t[?]", #bytes / 2)
+    ffi.copy(block, bytes, #bytes)
+    keep[#keep + 1] = block
     if deps.before_spawn then
       deps.before_spawn(plan, keep)
     end
-    local ok = C.CreateProcessW(app, line, nil, nil, 1, bit.bor(0x08000000, 0x400, 4, 0x80000), env, cwd, si, pi)
+    local ok = C.CreateProcessW(app, line, nil, nil, 1, bit.bor(0x08000000, 0x400, 4, 0x80000), block, cwd, si, pi)
     local spawn_error = ok == 0 and tonumber(C.GetLastError()) or nil
-    ffi.fill(env, ffi.sizeof(env), 0)
+    ffi.fill(block, ffi.sizeof(block), 0)
     if ok == 0 then
       return fail("Cannot create process", spawn_error)
     end
@@ -278,6 +272,14 @@ function M.new(deps)
     end
     if C.AssignProcessToJobObject(job, process) == 0 then
       return fail("Cannot assign process to job")
+    end
+    -- A named job object loses its name when its last handle closes. The observer of a detached
+    -- run receives a duplicate of that run's job handle, so the next load can still reopen the job
+    -- by name and stop the whole tree. Without it, adoption falls back to the process handle.
+    local kept = false
+    if plan.keep_alive then
+      local copy = ffi.new("COBS_HANDLE[1]")
+      kept = C.DuplicateHandle(C.GetCurrentProcess(), plan.keep_alive, process, copy, 0, 0, 2) ~= 0
     end
     if C.ResumeThread(thread) == 0xffffffff then
       return fail("Cannot resume process")
@@ -292,7 +294,7 @@ function M.new(deps)
       C.DeleteProcThreadAttributeList(attrs)
       attrs = nil
     end
-    local p = { pid = tonumber(pi.dwProcessId), child_pid = tonumber(pi.dwProcessId), stdout = "", stderr = "" }
+    local p = { pid = tonumber(pi.dwProcessId), child_pid = tonumber(pi.dwProcessId), stdout = "", stderr = "", kept = kept }
     local result, exited
     local pending = plan.stdin_data or ""
     if fs.write and plan.pid_path then
@@ -399,27 +401,29 @@ function M.new(deps)
       if detached then return detached end
       local helpers = {}
       local plain = {}
-      for key, value in pairs(M.inherited(C)) do
+      for key, value in pairs(env.inherited()) do
         if not key:upper():match("^CRIER_") then plain[key:upper()] = value end
       end
       local executable = cmdline.powershell(plain.SYSTEMROOT)
-      local function helper(script, input, status)
+      local function helper(script, input, status, keep_alive)
         local environment = {}
         for key, value in pairs(plain) do environment[key] = value end
         environment.COBS_STATUS = status
         local child, err = self.spawn({
           executable = executable,
           args = {"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script},
-          env = environment, stdin_handle = input, kind = status and "observer" or "drainer",
+          env = environment, stdin_handle = input, kind = status and "observer" or "drainer", keep_alive = keep_alive,
         })
         if child then helpers[#helpers + 1] = child; return child end
         for _, started in ipairs(helpers) do started.kill(); started.detach() end
         return nil, err
       end
       -- Transfer the process handle before closing ours, even if it has already exited.
+      local named
       if plan.status_path and not result then
-        local observer, err = helper(OBSERVE, process, plan.status_path)
+        local observer, err = helper(OBSERVE, process, plan.status_path, job)
         if not observer then return nil, err end
+        named = observer.kept and job_name or nil
       end
       for _, source in ipairs({pout or false, perr or false}) do
         if source and not source.eof then
@@ -431,7 +435,7 @@ function M.new(deps)
       for _, helper_process in ipairs(helpers) do records[#records + 1] = helper_process.detach() end
       cleanup()
       detached = {pid = p.pid, child_pid = p.pid, status_path = plan.status_path,
-        job_name = job_name, drainers = records, kind = plan.kind}
+        job_name = named, drainers = records, kind = plan.kind}
       return detached
     end
     p.tick = p.poll
@@ -485,6 +489,10 @@ function M.new(deps)
       local name = ffi.new("uint16_t[?]", #bytes / 2 + 1)
       ffi.copy(name, bytes, #bytes)
       job = C.OpenJobObjectW(8, 0, name)
+      -- A NULL cdata is truthy in LuaJIT; without the job, the process handle is what remains.
+      if job == nil then
+        job = nil
+      end
     end
     local p = { pid = record.pid, child_pid = record.pid }
     local result

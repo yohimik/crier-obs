@@ -1,6 +1,7 @@
 package.path = "plugin/src/?.lua;plugin/spec/?.lua;src/?.lua;spec/?.lua;" .. package.path
 local ffi = require("ffi")
 local windows = require("crier_obs.proc.windows")
+local env_module = require("crier_obs.ports.env")
 local fake = require("fakes.win32")
 
 local function plan()
@@ -24,6 +25,12 @@ describe("Windows process contracts through real FFI buffers", function()
       ffi.string(state.environment_buffer, state.environment_size)
     )
     assert.equals(0, p.poll().code)
+    local child = state.processes[1]
+    assert.is_table(child.std)
+    assert.equal(3, #child.inherited)
+    for i = 1, 3 do
+      assert.equal(child.std[i], child.inherited[i])
+    end
     state.assert_closed()
   end)
 
@@ -45,18 +52,39 @@ describe("Windows process contracts through real FFI buffers", function()
     end)
   end
 
-  it("detaches without terminating a running job, then adopts and reports it", function()
+  it("detaches without terminating a running job, then adopts it and stops the whole job", function()
     local C, state = fake.new({ running = true })
     local backend = windows.new({ C = C })
-    local p = assert(backend.spawn(plan()))
+    local request = plan()
+    request.status_path = "C:\\state\\status"
+    local p = assert(backend.spawn(request))
     assert.is_nil(p.poll())
     local record = p.detach()
     state.assert_closed()
     assert.is_nil(state.calls.TerminateProcess)
+    -- The observer holds a duplicate of the job handle, so the name outlives our handles.
+    assert.equal("Local\\crier-obs-4321", record.job_name)
     local adopted = assert(backend.adopt(record))
+    assert.equal("Local\\crier-obs-4321", state.opened_job)
     assert.is_true(adopted.terminate())
     assert.equals(1, state.calls.TerminateJobObject)
+    assert.is_nil(state.calls.TerminateProcess)
     adopted.detach()
+    state.assert_closed()
+  end)
+
+  it("adopts a run whose job name is gone through its process handle", function()
+    local C, state = fake.new({ running = true })
+    local backend = windows.new({ C = C })
+    local p = assert(backend.spawn(plan()))
+    local record = assert(p.detach())
+    assert.is_nil(record.job_name)
+    local adopted = assert(backend.adopt({ pid = record.pid, job_name = "Local\\crier-obs-4321" }))
+    assert.equal("Local\\crier-obs-4321", state.opened_job)
+    assert.is_true(adopted.terminate())
+    assert.is_true(adopted.cancel())
+    assert.is_nil(state.calls.TerminateJobObject)
+    assert.equal(2, state.calls.TerminateProcess)
     state.assert_closed()
   end)
 
@@ -80,6 +108,7 @@ describe("Windows process contracts through real FFI buffers", function()
         },
         spawner = windows.new({ C = C }),
         resolver = {},
+        log = require("crier_obs.log").new({}),
       })
       assert(installer.start())
       assert.equal(case[2], state.application)
@@ -242,8 +271,8 @@ describe("Windows process contracts through real FFI buffers", function()
       assert.equals(1234, err.win32)
       state.assert_closed()
     end
-    local C = {GetEnvironmentStringsW = function() return ffi.NULL end}
-    assert.same({}, windows.inherited(C))
+    local C = {GetEnvironmentStringsW = function() return fake.NULL end}
+    assert.same({}, env_module.new({ platform = "Windows", C = C }).inherited())
   end)
   it('hands detached completion to an isolated observer holding the actual process handle', function()
     local C, state = fake.new{running = true}
@@ -322,7 +351,7 @@ describe("Windows process contracts through real FFI buffers", function()
 
   it('cancels adopted processes through the job or process handle and never double-closes completion', function()
     for _, named in ipairs({false, true}) do
-      local C, state = fake.new{running = true}
+      local C, state = fake.new{running = true, named_jobs = {job = named}}
       local files = {}
       local p = assert(windows.new{C = C, fs = {read = function() return nil, {kind = 'missing'} end,
         write = function(path, data) files[path] = data end}}.adopt{

@@ -53,10 +53,17 @@ function M.new(deps)
   end
   function self.forget(account, callback)
     local path = M.record_path(dir, account)
-    if not fs.exists(path) then callback(true); return end
-    local ok, err = fs.remove(path); callback(ok, err or (not ok and {kind = 'filesystem', message = 'Cannot forget credential'} or nil))
+    -- A record rewritten by an older build can have left <record>.bak or <record>.tmp beside it.
+    if fs.remove_private(path) then callback(true); return end
+    callback(nil, {kind = 'filesystem', message = 'Cannot forget credential'})
+  end
+  -- Presence only: the record is not decrypted.
+  function self.exists(account, callback)
+    if fs.exists(M.record_path(dir, account)) then callback(true); return end
+    callback(nil, {kind = 'missing', message = 'Credential not stored'})
   end
   function self.tick() end
+  function self.close() end
   return self
 end
 return M

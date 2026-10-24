@@ -44,15 +44,15 @@ describe('credential keyrings', function()
     b.lookup('account', function() called = true end); b.close(); b.tick()
     assert.equal(1, cancelled); assert.is_false(called)
   end)
-  it('maps generic failures and closes legacy process handles without callbacks', function()
+  it('maps generic failures and cancels pending processes on close without callbacks', function()
     local _, err = run_backend(macos, {code = 7, stderr = 'unavailable'}, 'lookup')
     assert.equal('unavailable', err.kind)
-    local killed, polled, detached = false, false, false
+    local cancelled = 0
     local b = macos.new{spawner = {spawn = function() return {
-      poll = function() polled = true end, kill = function() killed = true end, detach = function() detached = true end,
+      poll = function() return nil end, cancel = function() cancelled = cancelled + 1; return true end,
     } end}}
-    b.lookup('account', function() assert.is_true(false) end); b.close()
-    assert.is_true(killed); assert.is_true(polled); assert.is_true(detached)
+    b.lookup('account', function() assert.is_true(false) end); b.tick(); b.close(); b.tick()
+    assert.equal(1, cancelled)
   end)
   it('leaves Flatpak host wrapping to the shared spawner', function()
     local plan
@@ -77,7 +77,7 @@ describe('credential keyrings', function()
   it('reports null store unavailability for every operation', function()
     local b = null.new{reason = 'No credential store'}
     local function check(v, e) assert.is_nil(v); assert.equal('unavailable', e.kind) end
-    b.store('a', 'secret', check); b.lookup('a', check); b.forget('a', check); b.tick()
+    b.store('a', 'secret', check); b.lookup('a', check); b.forget('a', check); b.exists('a', check); b.tick(); b.close()
   end)
   it('uses DPAPI entropy, anchors buffers, zeros bytes and frees output allocations', function()
     local files, held, freed, buffers = {}, {}, 0, {}
@@ -96,7 +96,8 @@ describe('credential keyrings', function()
     C.LocalFree = function(ptr) freed = freed + 1; assert.equal(0, tonumber(ffi.cast('unsigned char*', ptr)[0])) end
     local fs = {exists = function(path) return files[path] ~= nil end, read = function(path) return files[path] end,
       mkdir_private = function() return true end, write_private = function(path, data) files[path] = data; return true end,
-      remove = function(path) files[path] = nil; return true end}
+      remove = function(path) files[path] = nil; return true end,
+      remove_private = function(path) files[path] = nil; return true end}
     local b = windows.new{fs = fs, state_dir = '/state', C = C, before_crypt = function(a, e) buffers[#buffers + 1] = a;
        buffers[#buffers + 1] = e end}
     b.store('default/token', 'secret😀', function(ok) assert.is_true(ok) end)
@@ -107,6 +108,43 @@ describe('credential keyrings', function()
     C.CryptUnprotectData = function() return 0 end
     b.lookup('default/token', function(value, err) assert.is_nil(value); assert.equal('unavailable', err.kind) end)
     b.forget('default/token', function(ok) assert.is_true(ok) end)
+  end)
+
+  it('keeps no previous DPAPI record behind after a re-save, and Forget removes every copy', function()
+    local obs = require('obslua')
+    local fs_module = require('crier_obs.ports.fs')
+    local state = os.tmpname(); os.remove(state)
+    local windows_fs = fs_module.new{obs = obs, platform = 'Windows'}
+    local host_fs = fs_module.new{obs = obs}
+    assert(host_fs.mkdir(state))
+    local C = {GetLastError = function() return 5 end, LocalFree = function() end}
+    local held = {}
+    local function transform(input, _, _, _, _, _, output)
+      local value = ffi.string(input.pbData, input.cbData)
+      local out = value:sub(1, 4) == 'enc:' and value:sub(5) or 'enc:' .. value
+      local buf = ffi.new('unsigned char[?]', #out); ffi.copy(buf, out, #out); held[#held + 1] = buf
+      output.cbData, output.pbData = #out, buf
+      return 1
+    end
+    C.CryptProtectData, C.CryptUnprotectData = transform, transform
+    local b = windows.new{fs = windows_fs, state_dir = state, C = C}
+    local record = require('crier_obs.secrets.keyring.file').record_path(state .. '/secrets', 'default/token')
+    local function leftovers()
+      local found = {}
+      for _, path in ipairs(host_fs.glob(state .. '/secrets/*')) do
+        if path:sub(1, #record) == record then found[#found + 1] = path end
+      end
+      return found
+    end
+    b.store('default/token', 'first', function(ok) assert.is_true(ok) end)
+    b.store('default/token', 'second', function(ok) assert.is_true(ok) end)
+    assert.same({record}, leftovers())
+    b.lookup('default/token', function(value) assert.equal('second', value) end)
+    -- A record rewritten by an earlier build with a backup extension is purged on Forget as well.
+    assert(obs.os_quick_write_utf8_file_safe(record, 'old', 3, false, 'tmp', 'bak'))
+    assert.is_true(host_fs.exists(record .. '.bak'))
+    b.forget('default/token', function(ok) assert.is_true(ok) end)
+    assert.same({}, leftovers())
   end)
 end)
 
@@ -131,7 +169,7 @@ describe('Windows credential index mutex', function()
     assert.is_true(locked(function() return true end)); assert.equal(names[1], names[2])
     state = 258; local ok, err = locked(function() assert.is_true(false) end)
     assert.is_nil(ok); assert.equal('busy', err.kind); assert.equal(2, released); assert.equal(3, closed)
-    C.CreateMutexW = function() return ffi.NULL end
+    C.CreateMutexW = function() return ffi.cast("void*", nil) end
     assert.is_nil(locked(function() return true end))
   end)
 end)

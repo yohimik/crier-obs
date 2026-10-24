@@ -1,14 +1,26 @@
 local ffi = require("ffi")
+local bit = require("bit")
+local consts = require("crier_obs.proc.consts")
 local M = {}
 ffi.cdef(
   [[int open(const char*, int, ...); long write(int,const void*,unsigned long); long read(int,void*,unsigned long);
  int close(int); int mkdir(const char*, unsigned int); int chmod(const char*, unsigned int); int unlink(const char*);
- int fchmod(int,unsigned int); int getpid(void); int rename(const char*,const char*);]]
+ int fchmod(int,unsigned int); int getpid(void); int rename(const char*,const char*);
+ void *opendir(const char*); void *readdir(void*); int closedir(void*);
+ void *cobs_opendir_inode64(const char*) __asm__("opendir$INODE64");
+ void *cobs_readdir_inode64(void*) __asm__("readdir$INODE64");
+ typedef struct { uint64_t ino; uint64_t seek; uint16_t reclen; uint16_t namlen; uint8_t type; char name[1024]; }
+   cobs_dirent_darwin;
+ typedef struct { unsigned long ino; long off; unsigned short reclen; unsigned char type; char name[256]; }
+   cobs_dirent_linux;]]
 )
 function M.new(deps)
   local obs = assert(deps.obs)
   local platform = deps.platform or ffi.os
+  local arch = deps.arch or ffi.arch
   local C = deps.C or ffi.C
+  local K = consts.of(platform, arch)
+  local private_create = bit.bor(K.O_WRONLY, K.O_CREAT, K.O_EXCL)
   local self = {}
   local counter = 0
   function self.exists(path)
@@ -34,12 +46,11 @@ function M.new(deps)
       return nil, err
     end
     if platform ~= "Windows" then
-      local flags = platform == "OSX" and (0x100000 + 0x100) or (0x10000 + 0x20000)
-      local fd = C.open(path, flags)
+      local fd = C.open(path, bit.bor(K.O_RDONLY, K.O_DIRECTORY, K.O_NOFOLLOW))
       if fd < 0 then
         return nil, { kind = "filesystem", message = "Private directory is inaccessible or a symlink: " .. path }
       end
-      local secured = C.fchmod(fd, 448) == 0
+      local secured = C.fchmod(fd, K.S_IRWXU) == 0
       C.close(fd)
       if not secured then
         return nil, { kind = "filesystem", message = "Cannot secure " .. path }
@@ -56,12 +67,16 @@ function M.new(deps)
   end
   function self.write_private(path, data)
     if platform == "Windows" then
-      return self.write(path, data)
+      -- No backup extension: os_safe_replace would otherwise keep the previous record as <path>.bak,
+      -- and a re-saved or forgotten credential must not survive in a backup file.
+      if not obs.os_quick_write_utf8_file_safe(path, data, #data, false, "tmp", nil) then
+        return nil, { kind = "filesystem", message = "Cannot write private file " .. path }
+      end
+      return true
     end
     counter = counter + 1
     local tmp = path .. "." .. tonumber(C.getpid()) .. "." .. counter .. ".tmp"
-    local flags = platform == "OSX" and (1 + 512 + 2048) or (1 + 64 + 128)
-    local fd = C.open(tmp, flags, ffi.cast("unsigned int", 384))
+    local fd = C.open(tmp, private_create, ffi.cast("unsigned int", K.S_IRUSR_IWUSR))
     if fd < 0 then
       return nil, { kind = "filesystem", message = "Cannot create private file " .. path }
     end
@@ -72,7 +87,7 @@ function M.new(deps)
     while offset < #data do
       local n = tonumber(C.write(fd, buf + offset, #data - offset))
       if n <= 0 then
-        if n ~= -1 or ffi.errno() ~= 4 then
+        if n ~= -1 or ffi.errno() ~= K.EINTR then
           ok = false
           break
         end
@@ -89,6 +104,16 @@ function M.new(deps)
     end
     C.unlink(tmp)
     return nil, { kind = "filesystem", message = "Cannot write private file " .. path }
+  end
+  -- Removes a private record together with the side files a safe write can leave behind.
+  function self.remove_private(path)
+    local ok = not self.exists(path) or self.remove(path)
+    for _, suffix in ipairs({ ".bak", ".tmp" }) do
+      if self.exists(path .. suffix) and not self.remove(path .. suffix) then
+        ok = false
+      end
+    end
+    return ok
   end
   function self.create_private(path, data)
     if platform == "Windows" then
@@ -117,10 +142,9 @@ function M.new(deps)
       end
       return true
     end
-    local flags = platform == "OSX" and (1 + 512 + 2048) or (1 + 64 + 128)
-    local fd = C.open(path, flags, ffi.cast("unsigned int", 384))
+    local fd = C.open(path, private_create, ffi.cast("unsigned int", K.S_IRUSR_IWUSR))
     if fd < 0 then
-      return nil, { kind = ffi.errno() == 17 and "exists" or "filesystem", message = "Cannot create private file" }
+      return nil, { kind = ffi.errno() == K.EEXIST and "exists" or "filesystem", message = "Cannot create private file" }
     end
     local buffer = ffi.new("uint8_t[?]", #data)
     ffi.copy(buffer, data, #data)
@@ -128,7 +152,7 @@ function M.new(deps)
     while offset < #data do
       local count = tonumber(C.write(fd, buffer + offset, #data - offset))
       if count <= 0 then
-        if count ~= -1 or ffi.errno() ~= 4 then
+        if count ~= -1 or ffi.errno() ~= K.EINTR then
           ffi.fill(buffer, #data)
           C.close(fd)
           C.unlink(path)
@@ -189,27 +213,23 @@ function M.new(deps)
       until C.FindNextFileW(handle, data) == 0
       C.FindClose(handle)
     else
-      ffi.cdef("void* opendir(const char*); void* readdir(void*); int closedir(void*);")
-      if platform == "OSX" then
-        ffi.cdef(
-          "typedef struct { uint64_t ino; uint64_t seek; uint16_t reclen; uint16_t namlen; uint8_t type; char name[1024]; } cobs_dirent;"
-        )
-      else
-        ffi.cdef(
-          "typedef struct { unsigned long ino; long off; unsigned short reclen; unsigned char type; char name[256]; } cobs_dirent;"
-        )
-      end
-      local dir = C.opendir(directory)
+      -- Darwin's plain opendir/readdir are the legacy 32-bit-inode ABI on x86_64; the $INODE64 symbols
+      -- return the layout below there, and arm64 has only that layout under the plain names.
+      local legacy = platform == "OSX" and arch == "x64"
+      local opendir = legacy and C.cobs_opendir_inode64 or C.opendir
+      local readdir = legacy and C.cobs_readdir_inode64 or C.readdir
+      local layout = platform == "OSX" and "cobs_dirent_darwin*" or "cobs_dirent_linux*"
+      local dir = opendir(directory)
       if dir == nil then
         return names
       end
       local match = "^" .. mask:gsub("([%^%$%(%)%%%.%[%]%+%-])", "%%%1"):gsub("%*", ".*"):gsub("%?", ".") .. "$"
       while true do
-        local entry = C.readdir(dir)
+        local entry = readdir(dir)
         if entry == nil then
           break
         end
-        local name = ffi.string(ffi.cast("cobs_dirent*", entry).name)
+        local name = ffi.string(ffi.cast(layout, entry).name)
         if name ~= "." and name ~= ".." and name:match(match) then
           names[#names + 1] = directory .. "/" .. name
         end

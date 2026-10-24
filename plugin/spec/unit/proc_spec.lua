@@ -5,9 +5,10 @@ local quote = require("crier_obs.proc.cmdline_windows")
 local posix = require("crier_obs.proc.posix")
 local spawner = require("crier_obs.proc.spawner")
 local resolver = require("crier_obs.proc.resolver")
+local host_env = require("crier_obs.ports.env").new({})
 ffi.cdef(
 	[[int usleep(unsigned int); char *getcwd(char*,unsigned long);
-int open(const char*,int,...); int mkdir(const char*,unsigned int); int rmdir(const char*);]]
+int open(const char*,int,...); int mkdir(const char*,unsigned int); int rmdir(const char*); int kill(int,int);]]
 )
 local function wait(p)
 	for _ = 1, 2000 do
@@ -20,6 +21,16 @@ local function wait(p)
 	end
 	p.kill()
 	assert(false, "process did not finish")
+end
+-- kill(pid, 0) fails with ESRCH once nothing is left of the process, a zombie included.
+local function gone(pid)
+	for _ = 1, 500 do
+		if ffi.C.kill(pid, 0) == -1 and ffi.errno() == 3 then
+			return true
+		end
+		ffi.C.usleep(2000)
+	end
+	return false
 end
 local function read(path)
 	local f = io.open(path, "rb")
@@ -80,7 +91,7 @@ describe("native POSIX process isolation #posix", function()
 		end,
 	})
 	it("anchors environment and arguments across collection, strips wrapper env, and preserves cwd", function()
-		local env = posix.inherited()
+		local env = host_env.inherited()
 		env.VALUE = 'token " ☺'
 		local args = { "-c", 'printf "%s|%s|%s" "$VALUE" "$PWD" "${COBS_CWD-unset}"' }
 		local p = assert(native.spawn({
@@ -99,7 +110,7 @@ describe("native POSIX process isolation #posix", function()
 		local data = string.rep("secret 🔴\n", 20000)
 		local p = assert(native.spawn({
 			executable = "/bin/cat",
-			env = posix.inherited(),
+			env = host_env.inherited(),
 			stdin_data = data,
 			capture_stdout = true,
 			capture_stderr = true,
@@ -111,7 +122,7 @@ describe("native POSIX process isolation #posix", function()
 	it("survives writes after the reader exits", function()
 		local p = assert(native.spawn({
 			executable = "/usr/bin/true",
-			env = posix.inherited(),
+			env = host_env.inherited(),
 			stdin_data = string.rep("x", 200000),
 			capture_stdout = true,
 			capture_stderr = true,
@@ -123,13 +134,13 @@ describe("native POSIX process isolation #posix", function()
 			local p = assert(native.spawn({
 				executable = "/bin/sh",
 				args = { "-c", "exit " .. code },
-				env = posix.inherited(),
+				env = host_env.inherited(),
 				capture_stderr = true,
 			}))
 			assert.equal(code, wait(p).code)
 		end
 		local p =
-			assert(native.spawn({ executable = "/nonexistent/crier", env = posix.inherited(), capture_stderr = true }))
+			assert(native.spawn({ executable = "/nonexistent/crier", env = host_env.inherited(), capture_stderr = true }))
 		assert.equal(127, wait(p).code)
 	end)
 	it("closes inherited descriptors beyond standard streams", function()
@@ -138,7 +149,7 @@ describe("native POSIX process isolation #posix", function()
 		local p = assert(native.spawn({
 			executable = "/bin/sh",
 			args = { "-c", "if test -e /dev/fd/" .. fd .. "; then exit 77; fi" },
-			env = posix.inherited(),
+			env = host_env.inherited(),
 		}))
 		assert.equal(0, wait(p).code)
 		ffi.C.close(fd)
@@ -182,7 +193,7 @@ describe("native POSIX process isolation #posix", function()
 		local p = assert(native.spawn({
 			executable = "/bin/sh",
 			args = { "-c", "sleep .03; dd if=/dev/zero bs=4096 count=100 2>/dev/null; exit 6" },
-			env = posix.inherited(),
+			env = host_env.inherited(),
 			capture_stdout = true,
 			capture_stderr = true,
 			status_path = dir .. "/status",
@@ -206,7 +217,7 @@ describe("native POSIX process isolation #posix", function()
 		local p = assert(native.spawn({
 			executable = "/bin/sh",
 			args = { "-c", "trap 'exit 6' TERM; while :; do :; done" },
-			env = posix.inherited(),
+			env = host_env.inherited(),
 			status_path = dir .. "/status",
 			pid_path = dir .. "/pid",
 		}))
@@ -218,8 +229,10 @@ describe("native POSIX process isolation #posix", function()
 			ffi.C.usleep(1000)
 		end
 		ffi.C.usleep(10000)
+		local child = assert(tonumber(read(dir .. "/pid")))
 		assert.is_true(p.terminate())
 		assert.equal(6, wait(p).code)
+		assert.is_true(gone(child), "child " .. child .. " outlived TERM")
 		os.remove(dir .. "/status")
 		os.remove(dir .. "/pid")
 		ffi.C.rmdir(dir)
@@ -255,9 +268,12 @@ describe("native POSIX process isolation #posix", function()
 		p.poll()
 		time = 3
 		p.poll()
+		local child = assert(tonumber(read(dir .. "/pid")))
 		local r = wait(p)
 		assert.is_true(r.timed_out)
 		assert.equal(137, r.code)
+		-- SIGKILL reaches the TERM-ignoring child through the process group, not just the wrapper.
+		assert.is_true(gone(child), "child " .. child .. " survived escalation")
 		os.remove(dir .. "/status")
 		os.remove(dir .. "/pid")
 		ffi.C.rmdir(dir)

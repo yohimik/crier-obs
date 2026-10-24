@@ -55,9 +55,11 @@ describe("safe process diagnostics", function()
     assert.matches("timeout", messages[3], 1, true)
     assert.matches("timeout grace", messages[4], 1, true)
     assert.matches("code 0", messages[5], 1, true)
+    -- Environment names are logged, never their values.
+    assert.matches("job environment: CRIER_TOKEN", messages[1], 1, true)
+    assert.matches("stdout 0 bytes", messages[5], 1, true)
     for _, message in ipairs(messages) do
       assert.is_nil(message:find("SUPER_SECRET", 1, true))
-      assert.is_nil(message:find("CRIER_TOKEN", 1, true))
     end
   end)
 end)

@@ -1,6 +1,7 @@
 local ffi = require("ffi")
 local M = {}
-ffi.cdef("int access(const char*,int);")
+ffi.cdef([[int access(const char*,int); int sysctlbyname(const char*,void*,size_t*,void*,size_t);
+int open(const char*, int, ...); long read(int,void*,unsigned long); int close(int);]])
 function M.new(deps)
   deps = deps or {}
   local get = deps.getenv or os.getenv
@@ -100,6 +101,28 @@ function M.new(deps)
     table.sort(names)
     return names
   end
+  -- Identifies the current boot, so a journal written before a reboot is never mistaken for a live
+  -- process whose pid was reused. nil where the platform offers no cheap identifier.
+  function self.boot_id()
+    if platform == "OSX" then
+      local timeval, size = ffi.new("int64_t[2]"), ffi.new("size_t[1]", 16)
+      if C.sysctlbyname("kern.boottime", timeval, size, nil, 0) == 0 then
+        return "darwin-" .. tostring(timeval[0]):gsub("LL$", "")
+      end
+    elseif platform == "Linux" then
+      local fd = C.open("/proc/sys/kernel/random/boot_id", 0)
+      if fd >= 0 then
+        local buffer = ffi.new("char[64]")
+        local count = tonumber(C.read(fd, buffer, 64))
+        C.close(fd)
+        local id = count > 0 and ffi.string(buffer, count):match("^[%x%-]+")
+        if id and id ~= "" then
+          return "linux-" .. id
+        end
+      end
+    end
+    return nil
+  end
   function self.sandbox_status(fs)
     if not self.flatpak() then
       if self.snap() then
@@ -134,152 +157,6 @@ function M.new(deps)
       warning = true,
       message = "Flatpak host bridge requires flatpak-spawn --env-fd support and shared home paths; Check setup verifies the host command",
     }
-  end
-  local function shared_path(path)
-    if type(path) ~= "string" or path == "" then
-      return true
-    end
-    if path == "-" or path:match("^env:") or path:match("^%a[%w+.-]*://") then
-      return true
-    end
-    local home = get("HOME")
-    if not home or home == "" or path:find("/../", 1, true) or path:match("/%.%.$") then
-      return false
-    end
-    if path:sub(1, 1) ~= "/" then
-      return false
-    end
-    return path == home or path:sub(1, #home + 1) == home .. "/"
-  end
-  function self.prepare_host(plan, fs)
-    if not self.flatpak() then
-      return plan
-    end
-    local status = self.sandbox_status(fs)
-    if not status.helper then
-      return nil, { kind = "sandbox", message = status.message }
-    end
-    local function unavailable()
-      return nil,
-        {
-          kind = "sandbox",
-          message = "Flatpak host paths cannot be mapped safely. Keep the state folder, configuration, "
-            .. "templates and media under the shared home directory, or use a native OBS package",
-        }
-    end
-    local cwd = plan.cwd or get("HOME")
-    if type(cwd) ~= "string" or cwd == "" or not shared_path(cwd) then
-      return unavailable()
-    end
-    local executable = plan.executable or (plan.argv and plan.argv[1])
-    if
-      type(executable) ~= "string"
-      or executable == ""
-      or executable:match("^/app/")
-      or executable:match("^/tmp/")
-      or executable:match("^/run/")
-      or executable:find("/../", 1, true)
-    then
-      return unavailable()
-    end
-    for _, name in ipairs({ "stdin", "stdout", "stderr", "status_path", "pid_path" }) do
-      if plan[name] and not shared_path(plan[name]) then
-        return unavailable()
-      end
-    end
-    local path_keys = {}
-    for _, d in ipairs(require("crier_obs.registry.keys")) do
-      if d.path then
-        path_keys[d.key] = d.kind
-      end
-    end
-    local json = require("crier_obs.json")
-    for file, body in pairs(plan.files or {}) do
-      if not shared_path(file) then
-        return unavailable()
-      end
-      if file:match("config%.json$") then
-        local config = json.decode(body)
-        if type(config) ~= "table" then
-          return unavailable()
-        end
-        local names = {}
-        for name in pairs(((config.publish or {}).custom or {})) do
-          names[#names + 1] = name
-        end
-        for _, d in ipairs(require("crier_obs.schema.descriptor").build(names)) do
-          if d.path then
-            path_keys[d.key] = d.kind
-          end
-        end
-        for key in pairs(path_keys) do
-          local value = config
-          for part in key:gmatch("[^.]+") do
-            if type(value) == "table" then
-              value = value[part]
-            else
-              value = nil
-            end
-          end
-          if type(value) == "table" then
-            for _, item in ipairs(value) do
-              if not shared_path(item) then
-                return unavailable()
-              end
-            end
-          elseif value and not shared_path(value) then
-            return unavailable()
-          end
-        end
-      end
-    end
-    local args = plan.args or {}
-    for i, arg in ipairs(args) do
-      if arg == "--config" or arg == "--publish-input" or arg == "--render-output" then
-        if not shared_path(args[i + 1]) then
-          return unavailable()
-        end
-      elseif arg == "--set" then
-        local key, value = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
-        local kind = path_keys[key] or (key and key:match("^publish%.custom%.[^.]+%.overlay$") and "list")
-        if kind == "list" then
-          for item in value:gmatch("[^,]+") do
-            if not shared_path(item) then
-              return unavailable()
-            end
-          end
-        elseif kind and not shared_path(value) then
-          return unavailable()
-        end
-      end
-    end
-    local names = {}
-    for name, value in pairs(plan.env or {}) do
-      if name:find("%z") or name:find("=", 1, true) or tostring(value):find("%z") then
-        return nil, { kind = "environment", message = "Invalid host environment entry" }
-      end
-      if not name:match("^LD_") and not name:match("^FLATPAK_") then
-        names[#names + 1] = name
-      end
-    end
-    table.sort(names)
-    local block = {}
-    for _, name in ipairs(names) do
-      block[#block + 1] = name .. "=" .. tostring(plan.env[name]) .. "\0"
-    end
-    local host_args = { "--host", "--env-fd=3", "--clear-env", "--watch-bus", "--directory=" .. cwd, "--", executable }
-    for _, value in ipairs(args) do
-      host_args[#host_args + 1] = value
-    end
-    local prepared = {}
-    for key, value in pairs(plan) do
-      prepared[key] = value
-    end
-    prepared.executable = status.helper
-    prepared.args = host_args
-    prepared.cwd = nil
-    prepared.env_fd_data = table.concat(block)
-    return prepared
   end
   return self
 end
