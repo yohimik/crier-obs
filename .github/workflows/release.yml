@@ -58,8 +58,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.release.outputs.version }}
+        # The smoke reads only spec/ from the checkout; without src/ the asset cannot borrow a module from it.
         run: |
           gh release download "v$VERSION" --pattern crier-obs.lua --dir plugin/dist
           cd plugin
+          rm -rf src
           luajit -bl dist/crier-obs.lua >/dev/null
           luajit tools/smoke.lua dist/crier-obs.lua --version "$VERSION" --pin "$(cat crier.version)"

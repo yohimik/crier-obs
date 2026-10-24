@@ -1,11 +1,43 @@
 -- Exercise the delivered chunk in OBS's nonthrowing error/print environment.
-package.path = "src/?.lua;spec/?.lua;" .. package.path
+-- The bundle runs alone. The OBS stub (spec/stub) is the only file read from the checkout, and every
+-- crier_obs module, including the json and utf16 modules the stub itself uses, must come from the
+-- bundle's package.preload: a module the bundle lacks fails the smoke instead of loading from src/.
+package.path = "spec/?.lua"
+package.cpath = ""
+local loaders = package.loaders
+local preload_loader, lua_loader = loaders[1], loaders[2]
+for i = #loaders, 1, -1 do
+  loaders[i] = nil
+end
+loaders[1] = preload_loader
+loaders[2] = function(name)
+  if name:match("^stub%.") then
+    return lua_loader(name)
+  end
+  return "\n\tno module '" .. name .. "' in the bundle under test"
+end
 local ffi = require("ffi")
-local obs = require("stub.obslua")
+-- Loaded lazily, after the bundle has registered its modules, so the stub's own requires resolve there.
 package.preload.obslua = function()
+  return require("stub.obslua")
+end
+local obs
+local function stub()
+  obs = obs or require("obslua")
   return obs
 end
 local path = arg[1] or "dist/crier-obs.lua"
+local source = assert(io.open(path, "rb"))
+local text = source:read("*a")
+source:close()
+local bundled = {}
+for name in text:gmatch('package%.preload%["([^"]+)"%]=function') do
+  bundled[name] = true
+end
+-- Every module name the bundle spells out, including platform-specific ones this host never loads.
+for _, name in text:gmatch("([\"'])(crier_obs%.[%w_%.]+)%1") do
+  assert(name:sub(-1) == "." or bundled[name], "bundle does not contain module " .. name)
+end
 local expected_version, expected_pin
 for i = 2, #arg do
   if arg[i] == "--version" then
@@ -29,21 +61,24 @@ else
   cwd = ffi.string(ffi.C.getcwd(ffi.new("char[4096]"), 4096))
 end
 local fake = cwd .. (ffi.os == "Windows" and "/spec/fakes/crier_win/crier.exe" or "/spec/fakes/crier")
-assert(obs.os_file_exists(fake), "native fake crier is missing: " .. fake)
 local settings
 local function run()
   error = function(message)
-    obs.script_log(obs.LOG_ERROR, tostring(message))
+    local o = stub()
+    o.script_log(o.LOG_ERROR, tostring(message))
   end
   print = function(...)
     local values = { ... }
     for i, v in ipairs(values) do
       values[i] = tostring(v)
     end
-    obs.script_log(obs.LOG_INFO, table.concat(values, "\t"))
+    local o = stub()
+    o.script_log(o.LOG_INFO, table.concat(values, "\t"))
   end
   local chunk = assert(loadfile(path))
   chunk()
+  stub()
+  assert(obs.os_file_exists(fake), "native fake crier is missing: " .. fake)
   local version = require("crier_obs.version")
   local meta = require("crier_obs.registry.meta")
   assert(not expected_version or version.VERSION == expected_version, "bundle version differs")
@@ -121,6 +156,9 @@ local function run()
     if line.level == obs.LOG_ERROR then
       original_error("Bundle smoke logged an error: " .. line.text)
     end
+  end
+  for name in pairs(package.loaded) do
+    assert(not name:match("^crier_obs%.") or bundled[name], "module loaded from outside the bundle: " .. name)
   end
   return version
 end
