@@ -17,6 +17,16 @@ M.last_recording = ""
 M.locale = "en-US"
 M.scene_name = "Scene"
 M.profile_name = "Profile"
+M.collection_name = "Collection"
+M.active_fps = 60
+M.stream_frames = 0
+M.tmp_root = "/tmp/crier-obs-stub/"
+-- Timers run on OBS's graphics thread; the frontend getters below read Qt UI state and may only be
+-- called from the UI thread (frontend events, script_update, buttons).
+M.graphics_thread = false
+local function ui_thread(name)
+  assert(not M.graphics_thread, name .. " called from the graphics thread")
+end
 local constants = {
   "OBS_TEXT_DEFAULT",
   "OBS_TEXT_MULTILINE",
@@ -31,6 +41,8 @@ local constants = {
   "OBS_COMBO_FORMAT_STRING",
   "OBS_EDITABLE_LIST_TYPE_STRINGS",
   "OBS_GROUP_NORMAL",
+  "OBS_BUTTON_DEFAULT",
+  "OBS_BUTTON_URL",
   "OBS_GROUP_CHECKABLE",
   "OBS_FRONTEND_EVENT_STREAMING_STARTING",
   "OBS_FRONTEND_EVENT_STREAMING_STARTED",
@@ -42,6 +54,11 @@ local constants = {
   "OBS_FRONTEND_EVENT_RECORDING_STOPPED",
   "OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED",
   "OBS_FRONTEND_EVENT_FINISHED_LOADING",
+  "OBS_FRONTEND_EVENT_SCENE_CHANGED",
+  "OBS_FRONTEND_EVENT_PROFILE_CHANGED",
+  "OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING",
+  "OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED",
+  "OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP",
   "LOG_DEBUG",
   "LOG_INFO",
   "LOG_WARNING",
@@ -50,7 +67,6 @@ local constants = {
 for i, name in ipairs(constants) do
   M[name] = i
 end
-M.LOG_WARN = M.LOG_WARNING
 local function object(kind, values)
   local o = { kind = kind, values = values or {}, defaults = {}, refs = 1 }
   refs[o] = true
@@ -160,17 +176,56 @@ function M.obs_properties_create()
   return { ordered = {}, by_name = {} }
 end
 function M.obs_properties_destroy() end
+-- libobs looks names up through nested groups, and a name is unique across the whole tree.
+local function root_of(ps)
+  while ps.parent do
+    ps = ps.parent
+  end
+  return ps
+end
+local function lookup(ps, name)
+  if ps.by_name[name] then
+    return ps.by_name[name], ps
+  end
+  for _, p in ipairs(ps.ordered) do
+    if p.content then
+      local found, owner = lookup(p.content, name)
+      if found then
+        return found, owner
+      end
+    end
+  end
+end
 local function prop(ps, kind, name, label, ...)
-  assert(not ps.by_name[name], "duplicate property " .. name)
+  assert(not lookup(root_of(ps), name), "duplicate property " .. name)
   local p = { kind = kind, name = name, label = label, visible = true, args = { ... } }
   ps.by_name[name] = p
   ps.ordered[#ps.ordered + 1] = p
+  -- The lookup table lists every property, nested ones too, for specs that address them by name.
+  local root = root_of(ps)
+  if root ~= ps then
+    root.by_name[name] = p
+  end
   return p
 end
-for _, kind in ipairs({ "bool", "int", "float", "text", "path", "list", "editable_list", "group" }) do
+for _, kind in ipairs({ "bool", "int", "float", "text", "path", "list", "editable_list" }) do
   M["obs_properties_add_" .. kind] = function(ps, name, label, ...)
     return prop(ps, kind, name, label, ...)
   end
+end
+function M.obs_properties_add_group(ps, name, label, group_type, content)
+  assert(content and content.ordered and not content.parent, "group content must be a fresh properties object")
+  local p = prop(ps, "group", name, label, group_type)
+  p.content = content
+  content.parent = ps
+  for child_name, child in pairs(content.by_name) do
+    assert(not root_of(ps).by_name[child_name] or root_of(ps).by_name[child_name] == child, "duplicate property " .. child_name)
+    root_of(ps).by_name[child_name] = child
+  end
+  return p
+end
+function M.obs_property_group_content(p)
+  return p.content
 end
 function M.obs_properties_add_button(ps, name, label, callback)
   if type(callback) ~= "function" then
@@ -185,17 +240,31 @@ function M.obs_properties_add_button2(ps, name, label, callback, private)
   p.private = private
   return p
 end
-function M.obs_properties_remove(ps, name)
-  local p = ps.by_name[name]
-  ps.by_name[name] = nil
-  for i = #ps.ordered, 1, -1 do
-    if ps.ordered[i] == p then
-      table.remove(ps.ordered, i)
+function M.obs_properties_remove_by_name(ps, name)
+  local p, owner = lookup(ps, name)
+  if not p then
+    return
+  end
+  owner.by_name[name] = nil
+  root_of(ps).by_name[name] = nil
+  for i = #owner.ordered, 1, -1 do
+    if owner.ordered[i] == p then
+      table.remove(owner.ordered, i)
     end
   end
 end
 function M.obs_properties_get(ps, name)
-  return ps.by_name[name]
+  return (lookup(ps, name))
+end
+-- Mirrors OBSPropertiesView::AddText for OBS_TEXT_INFO: the right-hand text is the settings value,
+-- or the long description when there is no value; with neither, the description spans the row.
+function M.render_info(p, settings)
+  assert(p.kind == "text" and p.args[1] == M.OBS_TEXT_INFO, "not an info row: " .. tostring(p.name))
+  local value = settings and M.obs_data_get_string(settings, p.name) or ""
+  if value == "" and p.description == nil then
+    return nil, p.label
+  end
+  return p.label, value ~= "" and value or p.description
 end
 function M.obs_properties_first(ps)
   return ps.ordered[1]
@@ -273,8 +342,11 @@ function M.advance(seconds)
       t.next = t.next + t.ms / 1000
       count = count + 1
       M.current_timer = t.fn
-      t.fn()
+      M.graphics_thread = true
+      local ok, err = pcall(t.fn)
+      M.graphics_thread = false
       M.current_timer = nil
+      assert(ok, err)
     end
   end
 end
@@ -325,15 +397,23 @@ function M.obs_frontend_replay_buffer_active()
   return M.replay_active
 end
 function M.obs_frontend_get_last_replay()
+  ui_thread("obs_frontend_get_last_replay")
   return M.last_replay
 end
 function M.obs_frontend_get_last_recording()
+  ui_thread("obs_frontend_get_last_recording")
   return M.last_recording
 end
 function M.obs_frontend_get_current_profile()
+  ui_thread("obs_frontend_get_current_profile")
   return M.profile_name
 end
+function M.obs_frontend_get_current_scene_collection()
+  ui_thread("obs_frontend_get_current_scene_collection")
+  return M.collection_name
+end
 function M.obs_frontend_get_current_scene()
+  ui_thread("obs_frontend_get_current_scene")
   return object("source", { name = M.scene_name })
 end
 function M.obs_source_get_name(o)
@@ -341,18 +421,25 @@ function M.obs_source_get_name(o)
 end
 M.obs_source_release = release
 function M.obs_frontend_get_streaming_output()
-  return object("output", { frames = 0 })
+  return object("output", { frames = M.stream_frames })
+end
+function M.obs_get_active_fps()
+  return M.active_fps
 end
 M.obs_output_release = release
 function M.obs_output_get_total_frames(o)
   return o.values.frames
 end
 function M.obs_frontend_get_streaming_service()
+  ui_thread("obs_frontend_get_streaming_service")
   M.service = M.service or { values = { server = "rtmp://example.test", key = "NEVER INCLUDE STREAM KEY" } }
   return M.service
 end
 function M.obs_service_get_settings(o)
   return object("data", clone(o.values))
+end
+function M.obs_get_version_string()
+  return "32.2.2"
 end
 function M.obs_get_locale()
   return M.locale
@@ -436,10 +523,22 @@ function M.os_quick_write_utf8_file(path, data, len)
   f:close()
   return ok ~= nil
 end
-function M.os_quick_write_utf8_file_safe(path, data, len, _, ext)
-  local tmp = path .. "." .. (ext or "tmp")
+-- libobs writes <path>.<temp_ext>, then os_safe_replace keeps the previous file as <path>.<backup_ext>
+-- when a backup extension is given.
+function M.os_quick_write_utf8_file_safe(path, data, len, _, temp_ext, backup_ext)
+  assert(temp_ext and temp_ext ~= "", "os_quick_write_utf8_file_safe needs a temporary extension")
+  local tmp = path .. "." .. temp_ext
   if not M.os_quick_write_utf8_file(tmp, data, len) then
     return false
+  end
+  if backup_ext and backup_ext ~= "" and M.os_file_exists(path) then
+    local backup = path .. "." .. backup_ext
+    if M.os_file_exists(backup) then
+      M.os_unlink(backup)
+    end
+    if M.os_rename(path, backup) ~= 0 then
+      return false
+    end
   end
   return M.os_rename(tmp, path) == 0
 end
@@ -488,7 +587,7 @@ function M.os_rename(a, b)
   return ffi.C.rename(a, b)
 end
 function M.os_get_config_path_ptr(s)
-  return "/tmp/crier-obs-stub/" .. (s or "")
+  return M.tmp_root .. (s or "")
 end
 function M.os_get_abs_path_ptr(s)
   if s:sub(1, 1) == "/" then
@@ -503,6 +602,10 @@ function M.assert_no_leaks()
   end
   assert(#kinds == 0, "OBS reference leaks: " .. table.concat(kinds, ","))
 end
+-- Drops the reference table after a leak has been reported, so one failing spec does not fail the rest.
+function M.forget_references()
+  refs = {}
+end
 function M.reset()
   M.assert_no_leaks()
   timers = {}
@@ -513,10 +616,28 @@ function M.reset()
   M.streaming = false
   M.recording = false
   M.replay_active = false
+  M.graphics_thread = false
+  M.stream_frames = 0
 end
 function M.lifecycle(script, settings)
   script.script_defaults(settings)
   script.script_load(settings)
   script.script_update(settings)
 end
+-- The real module has no field for a name it does not export. Reading an OBS-shaped name that obslua
+-- lacks fails here, so a misspelt API call cannot pass under the stub while it is nil inside OBS.
+local exports = require("stub.obslua_exports")
+local api = { "^obs_", "^os_", "^OBS_", "^LOG_", "^timer_", "^script_log$", "^remove_current_callback$", "^gs_" }
+setmetatable(M, {
+  __index = function(_, name)
+    if type(name) == "string" and not exports[name] then
+      for _, pattern in ipairs(api) do
+        if name:match(pattern) then
+          assert(false, "obslua does not export " .. name)
+        end
+      end
+    end
+    return nil
+  end,
+})
 return M

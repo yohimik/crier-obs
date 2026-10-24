@@ -1,7 +1,11 @@
 -- Win32 contract fake: real FFI buffers, deliberate GC, and strict handle ownership.
 local ffi = require("ffi")
+local bit = require("bit")
 local utf16 = require("crier_obs.utf16")
 local M = {}
+-- Win32 failures return a NULL pointer, which is a truthy cdata in LuaJIT (ffi has no NULL field).
+local NULL = ffi.cast("void*", nil)
+M.NULL = NULL
 
 local function wide(ptr)
   local n = 0
@@ -13,8 +17,27 @@ end
 
 function M.new(options)
   options = options or {}
-  local state =
-    { live = {}, calls = {}, pipes = {}, processes = {}, next_handle = 100, error = 5, exit_code = options.code or 0 }
+  local state = {
+    live = {},
+    calls = {},
+    pipes = {},
+    processes = {},
+    jobs = {},
+    kept = {},
+    next_handle = 100,
+    error = 5,
+    exit_code = options.code or 0,
+  }
+  -- Named kernel objects keep their name only while some handle to them is open: one of ours, or a
+  -- duplicate a child process holds. options.named_jobs lists names other processes keep alive.
+  local function job_alive(name)
+    for key, job in pairs(state.jobs) do
+      if job == name and (state.live[key] or state.kept[key]) then
+        return true
+      end
+    end
+    return (options.named_jobs or {})[name] == true
+  end
   local C = {}
   local function handle(kind)
     state.next_handle = state.next_handle + 1
@@ -84,11 +107,19 @@ function M.new(options)
   function C.GetCurrentProcess()
     return ffi.cast("void*", -1)
   end
-  function C.DuplicateHandle(_, source, _, out, _, inherit, flags)
-    assert(inherit == 1 and flags == 2)
+  function C.DuplicateHandle(_, source, target, out, _, inherit, flags)
+    assert(flags == 2)
     if not called("DuplicateHandle") then
       return 0
     end
+    if target ~= C.GetCurrentProcess() then
+      -- Into another process: the copy is the child's handle, never ours to close.
+      assert(inherit == 0 and state.live[tostring(target)] == "process", "duplicate into an unknown process")
+      state.kept[tostring(source)] = tostring(target)
+      out[0] = ffi.cast("void*", 1)
+      return 1
+    end
+    assert(inherit == 1)
     out[0] = handle("duplicate")
     state.pipes[tostring(out[0])] = state.pipes[tostring(source)]
     state.duplicates = state.duplicates or {}; state.duplicates[tostring(out[0])] = source
@@ -114,12 +145,15 @@ function M.new(options)
       return 0
     end
     state.attributes = true
+    state.attribute_list = ffi.cast("void*", ptr)
     return 1
   end
-  function C.UpdateProcThreadAttribute(_, _, attribute, list, size)
+  function C.UpdateProcThreadAttribute(list_ptr, _, attribute, list, size)
     assert(attribute == 0x20002)
     assert(size == ffi.sizeof("COBS_HANDLE") * 3)
+    assert(ffi.cast("void*", list_ptr) == state.attribute_list, "updating an uninitialized attribute list")
     state.handle_list = list
+    state.handle_list_owner = state.attribute_list
     return called("UpdateProcThreadAttribute") and 1 or 0
   end
   function C.DeleteProcThreadAttributeList()
@@ -138,9 +172,21 @@ function M.new(options)
     assert(inherit == 1)
     assert(si.StartupInfo.cb == ffi.sizeof("COBS_STARTUPINFOEXW"))
     assert(flags == 0x08000000 + 0x400 + 4 + 0x80000)
-    assert(state.handle_list[0] == si.StartupInfo.hStdInput)
-    assert(state.handle_list[1] == si.StartupInfo.hStdOutput)
-    assert(state.handle_list[2] == si.StartupInfo.hStdError)
+    -- What the child really gets: without STARTF_USESTDHANDLES the std handle fields are ignored, and
+    -- without the initialised handle-list attribute every inheritable handle of OBS is inherited.
+    local std
+    if bit.band(si.StartupInfo.dwFlags, 0x100) ~= 0 then
+      std = { si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError }
+    end
+    local inherited = "everything"
+    if
+      state.attributes
+      and si.lpAttributeList ~= nil
+      and ffi.cast("void*", si.lpAttributeList) == state.attribute_list
+      and state.handle_list_owner == state.attribute_list
+    then
+      inherited = { state.handle_list[0], state.handle_list[1], state.handle_list[2] }
+    end
     state.application, state.command, state.cwd = wide(app), wide(line), wide(cwd)
     local p = ffi.cast("uint16_t*", env)
     local n = 0
@@ -152,8 +198,7 @@ function M.new(options)
     state.environment_size = (n + 2) * 2
     state.processes[#state.processes + 1] =
       { application = state.application, command = state.command, environment = state.environment,
-        stdin = si.StartupInfo.hStdInput,
-        inherited = {state.handle_list[0], state.handle_list[1], state.handle_list[2]} }
+        stdin = std and std[1], std = std, inherited = inherited }
     if not called("CreateProcessW") then
       return 0
     end
@@ -164,9 +209,11 @@ function M.new(options)
   function C.CreateJobObjectW(_, name)
     state.job_name = wide(name)
     if not called("CreateJobObjectW") then
-      return ffi.NULL
+      return NULL
     end
-    return handle("job")
+    local h = handle("job")
+    state.jobs[tostring(h)] = state.job_name
+    return h
   end
   function C.AssignProcessToJobObject()
     return called("AssignProcessToJobObject") and 1 or 0
@@ -201,11 +248,18 @@ function M.new(options)
     return 1
   end
   function C.OpenProcess()
-    if not called('OpenProcess') then return ffi.NULL end
+    if not called('OpenProcess') then return NULL end
     return handle("process")
   end
-  function C.OpenJobObjectW()
-    return handle("job")
+  function C.OpenJobObjectW(_, _, name)
+    state.opened_job = wide(name)
+    if not job_alive(state.opened_job) then
+      state.error = 2
+      return NULL
+    end
+    local h = handle("job")
+    state.jobs[tostring(h)] = state.opened_job
+    return h
   end
   function state.assert_closed()
     assert(next(state.live) == nil, "unclosed Win32 handles")

@@ -30,6 +30,7 @@ func main() {
 			fds = append(fds, entry.Name())
 		}
 		_ = os.WriteFile(filepath.Join(out, "fds"), []byte(strings.Join(fds, "\n")), 0600)
+		_ = os.WriteFile(filepath.Join(out, "pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 	}
 	if os.Getenv("FAKE_CRIER_READ") == "1" {
 		_, _ = io.Copy(os.Stdout, os.Stdin)
@@ -51,16 +52,24 @@ func main() {
 			version = "1.1.1"
 		}
 		report = map[string]string{"version": version}
-	case strings.Contains(args, "platforms"):
-		report = map[string]any{"platforms": []string{"telegram", "discord"}}
-	case strings.Contains(args, "ping"):
-		report = []map[string]any{{"target": "telegram", "ok": true, "account": "fake", "ms": 1}}
+	case strings.HasPrefix(args, "platforms"):
+		// crier v1.1.1 prints a bare array of PlatformInfo rows.
+		report = []map[string]any{
+			{"name": "telegram", "enabled": true, "ready": false, "needsUrl": false,
+				"problem": "publish.telegram: publish.telegram.token is required"},
+			{"name": "discord", "enabled": true, "ready": false, "needsUrl": false,
+				"problem": "publish.discord: publish.discord.channel-id is required"},
+		}
+	case strings.HasPrefix(args, "ping"):
+		// PingReport{Results}.
+		report = map[string]any{"results": []map[string]any{{"target": "telegram", "ok": true, "account": "fake", "ms": 1}}}
 	default:
 		row := map[string]any{"platform": "smoke", "ok": true}
 		if leak := os.Getenv("FAKE_CRIER_LEAK"); leak != "" {
-			row["error"] = leak
+			row["ok"] = false
+			row["error"] = "rejected " + leak
 		}
-		report = map[string]any{"results": []any{row}}
+		report = map[string]any{"dryRun": false, "variants": []any{}, "results": []any{row}}
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(report)
 	if leak := os.Getenv("FAKE_CRIER_LEAK"); leak != "" {

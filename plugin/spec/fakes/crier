@@ -1,19 +1,29 @@
 #!/bin/sh
+# Stand-in for crier with crier v1.1.1's output shapes (internal/app/commands.go and ping.go).
 if [ -n "$FAKE_CRIER_OUT" ]; then
   mkdir -p "$FAKE_CRIER_OUT"
   printf '%s\n' "$@" >"$FAKE_CRIER_OUT/argv"
   env >"$FAKE_CRIER_OUT/env"
   pwd >"$FAKE_CRIER_OUT/cwd"
   ls /dev/fd >"$FAKE_CRIER_OUT/fds"
+  echo "$$" >"$FAKE_CRIER_OUT/pid"
 fi
 if [ "${FAKE_CRIER_READ:-}" = 1 ]; then cat; fi
-if [ "$FAKE_CRIER_IGNORE_TERM" = 1 ]; then trap '' TERM; fi
-if [ -n "$FAKE_CRIER_SLEEP" ]; then sleep "$FAKE_CRIER_SLEEP"; fi
+if [ "${FAKE_CRIER_IGNORE_TERM:-}" = 1 ]; then trap '' TERM; fi
+if [ -n "${FAKE_CRIER_SLEEP:-}" ]; then sleep "$FAKE_CRIER_SLEEP"; fi
+leak=${FAKE_CRIER_LEAK:-}
 case "$*" in
   *--version*) printf '{"version":"%s"}\n' "${FAKE_CRIER_VERSION:-1.1.1}" ;;
-  *platforms*) printf '{"platforms":["telegram","discord"]}\n' ;;
-  *ping*) printf '[{"target":"telegram","ok":true,"account":"fake","ms":1}]\n' ;;
-  *) printf '{"results":[{"platform":"telegram","ok":true}]}\n' ;;
+  platforms*)
+    printf '[{"name":"telegram","enabled":true,"ready":false,"problem":"publish.telegram: publish.telegram.token is required","needsUrl":false},'
+    printf '{"name":"discord","enabled":true,"ready":false,"problem":"publish.discord: publish.discord.channel-id is required","needsUrl":false}]\n' ;;
+  ping*) printf '{"results":[{"target":"telegram","ok":true,"account":"fake","ms":1}]}\n' ;;
+  *)
+    if [ -n "$leak" ]; then
+      printf '{"dryRun":false,"variants":[],"results":[{"platform":"telegram","ok":false,"error":"rejected %s"}]}\n' "$leak"
+    else
+      printf '{"dryRun":false,"variants":[],"results":[{"platform":"telegram","ok":true}]}\n'
+    fi ;;
 esac
-if [ -n "$FAKE_CRIER_LEAK" ]; then printf '%s\n' "$FAKE_CRIER_LEAK" >&2; fi
+if [ -n "$leak" ]; then printf '%s\n' "$leak" >&2; fi
 exit "${FAKE_CRIER_EXIT:-0}"
