@@ -1,4 +1,5 @@
 local ffi = require("ffi")
+local cmdline = require("crier_obs.proc.cmdline_windows")
 local M = {}
 local function shell(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -53,7 +54,7 @@ function M.new(deps)
       .. (platform == "Windows" and "ps1" or "sh")
     local plan = { env = {}, capture_stdout = true, capture_stderr = true, timeout = 300, kind = "installer" }
     if platform == "Windows" then
-      plan.executable = deps.powershell_cmd or "powershell.exe"
+      plan.executable = cmdline.powershell(env.getenv and env.getenv("SystemRoot"))
       plan.args = {
         "-NoProfile",
         "-NonInteractive",

@@ -44,6 +44,14 @@ function M.environment(env)
 	end
 	return utf16.encode(table.concat(out, "\0") .. "\0\0")
 end
+-- CreateProcessW completes a relative lpApplicationName from the current directory and never
+-- searches PATH, so Windows system tools are always named by their absolute path.
+function M.powershell(system_root)
+	if type(system_root) ~= "string" or system_root == "" then
+		system_root = "C:\\Windows"
+	end
+	return (system_root:gsub("[\\/]+$", "")) .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+end
 M.escape_arg = M.quote
 M.build = M.command
 M.env_block = M.environment

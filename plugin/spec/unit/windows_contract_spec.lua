@@ -60,6 +60,36 @@ describe("Windows process contracts through real FFI buffers", function()
     state.assert_closed()
   end)
 
+  it("starts the installer through the absolute PowerShell path under SystemRoot", function()
+    local installer_module = require("crier_obs.invoke.installer")
+    local cases = {
+      { "D:\\Win", "D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" },
+      { "D:\\Win\\", "D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" },
+      { nil, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" },
+    }
+    for _, case in ipairs(cases) do
+      local C, state = fake.new({ running = true })
+      local installer = installer_module.new({
+        state_dir = "C:\\Users\\名字\\crier-obs",
+        pin = "1.1.1",
+        env = {
+          os = "Windows",
+          getenv = function(name)
+            return name == "SystemRoot" and case[1] or nil
+          end,
+        },
+        spawner = windows.new({ C = C }),
+        resolver = {},
+      })
+      assert(installer.start())
+      assert.equal(case[2], state.application)
+      assert.equal(case[2], state.command:sub(1, #case[2]))
+      assert.matches("-BinDir 'C:\\Users\\名字\\crier-obs\\bin'", state.command, 1, true)
+      installer.detach()
+      state.assert_closed()
+    end
+  end)
+
   it("maps native crash status separately from normal exit codes", function()
     local C, state = fake.new({ code = 0xc0000005 })
     local p = assert(windows.new({ C = C }).spawn(plan()))
@@ -223,6 +253,7 @@ describe("Windows process contracts through real FFI buffers", function()
     local record = assert(process.detach())
     assert.equal(2, #record.drainers); assert.equal(3, #state.processes)
     local observer = state.processes[2]
+    assert.equal("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", observer.application)
     assert.is_truthy(observer.command:find('CrierProcessWatch', 1, true))
     assert.is_truthy(observer.command:find('GetStdHandle(-10)', 1, true))
     assert.is_truthy(observer.command:find('GetExitCodeProcess', 1, true))

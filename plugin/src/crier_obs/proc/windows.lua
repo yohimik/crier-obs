@@ -402,8 +402,7 @@ function M.new(deps)
       for key, value in pairs(M.inherited(C)) do
         if not key:upper():match("^CRIER_") then plain[key:upper()] = value end
       end
-      local system = plain.SYSTEMROOT or "C:\\Windows"
-      local executable = system .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      local executable = cmdline.powershell(plain.SYSTEMROOT)
       local function helper(script, input, status)
         local environment = {}
         for key, value in pairs(plain) do environment[key] = value end
