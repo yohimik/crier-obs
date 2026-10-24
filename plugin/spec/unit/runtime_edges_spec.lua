@@ -468,11 +468,19 @@ describe("run execution failures and journals", function()
 
 	it("never adopts a run journaled before a reboot, and journals it as finished", function()
 		local fs, files = memoryfs()
-		local paths = { root = "/state", runs = "/state/runs", bin = "/state/bin", templates = "/state/templates",
-			template = "/state/templates/live.html", secrets = "/state/secrets" }
-		local clock = { now_wall = function()
-			return 50
-		end }
+		local paths = {
+			root = "/state",
+			runs = "/state/runs",
+			bin = "/state/bin",
+			templates = "/state/templates",
+			template = "/state/templates/live.html",
+			secrets = "/state/secrets",
+		}
+		local clock = {
+			now_wall = function()
+				return 50
+			end,
+		}
 		local before = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 7, boot_id = "boot-a" })
 		assert(before.init())
 		local run = assert(before.create("start"))
@@ -490,7 +498,10 @@ describe("run execution failures and journals", function()
 		local unknown = runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 9 })
 		local other = assert(unknown.create("end"))
 		assert(unknown.journal(other, { state = "detached", pid = 4343 }))
-		assert.equal(1, #runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 9, boot_id = "boot-c" }).adopt())
+		assert.equal(
+			1,
+			#runs_module.new({ fs = fs, clock = clock, paths = paths, pid = 9, boot_id = "boot-c" }).adopt()
+		)
 		assert.has_error(function()
 			runs_module.new({ fs = fs, clock = clock, paths = paths })
 		end)
@@ -614,7 +625,13 @@ describe("setup error rows", function()
 				end,
 			},
 		})
-		assert(p.start(model(), "/crier", { files = {}, args = { "--config", "/run/config.json" }, needs_secrets = {}, run = {} }))
+		assert(
+			p.start(
+				model(),
+				"/crier",
+				{ files = {}, args = { "--config", "/run/config.json" }, needs_secrets = {}, run = {} }
+			)
+		)
 		rows = p.tick()
 		assert.same({ "platforms", "--json", "--config", "/run/config.json" }, spawned[1].args)
 		assert.is_nil(spawned[1].env.CRIER_PUBLISH_TELEGRAM_TOKEN)

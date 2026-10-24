@@ -61,8 +61,22 @@ describe("invocation snapshots", function()
 		assert.is_nil(next(p.files))
 	end)
 	it("pins the untouched dialog's generated config and advanced --set list exactly", function()
-		local platforms = { "boosty", "discord", "facebook", "instagram", "linkedin", "mastodon", "reddit", "slack",
-			"telegram", "threads", "tiktok", "vk", "x", "youtube" }
+		local platforms = {
+			"boosty",
+			"discord",
+			"facebook",
+			"instagram",
+			"linkedin",
+			"mastodon",
+			"reddit",
+			"slack",
+			"telegram",
+			"threads",
+			"tiktok",
+			"vk",
+			"x",
+			"youtube",
+		}
 		local m = snapshot()
 		local p = assert(builder.build({ model = m, run = run, executable = "/bin/crier", caption = "c" }))
 		assert.same({ "--config", run.config, "--json", "--log-level", "info" }, p.args)
@@ -122,8 +136,14 @@ describe("invocation snapshots", function()
 				sets[q.args[i + 1]] = true
 			end
 		end
-		for _, set in ipairs({ "render.video.enabled=false", "render.video.frames-input=", "publish.boosty.enabled=false",
-			"publish.custom.images.enabled=false", "publish.custom.clips.enabled=true", "publish.input=/clips/a.mp4" }) do
+		for _, set in ipairs({
+			"render.video.enabled=false",
+			"render.video.frames-input=",
+			"publish.boosty.enabled=false",
+			"publish.custom.images.enabled=false",
+			"publish.custom.clips.enabled=true",
+			"publish.input=/clips/a.mp4",
+		}) do
 			assert.is_true(sets[set], set)
 		end
 		m.mode = "generated"

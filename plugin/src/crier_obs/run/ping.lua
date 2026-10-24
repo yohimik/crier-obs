@@ -1,7 +1,20 @@
 local json = require("crier_obs.json")
 local plans = require("crier_obs.invoke.plan")
 local base = require("crier_obs.invoke.base")
+local i18n = require("crier_obs.i18n")
 local M = {}
+-- A row this check writes itself: its target and texts carry dialog messages beside the English
+-- (target_text, message_text, error_text). Rows that relay crier's report keep crier's words.
+local function own_row(kind, fields, key, ...)
+	fields.target, fields.target_text = kind, i18n.message("target_" .. kind)
+	if key then
+		i18n.with(fields, key, ...)
+	end
+	return fields
+end
+local function error_row(kind, e, scrub)
+	return own_row(kind, { ok = false, error = scrub(e.message), error_text = e.message_text })
+end
 -- Check setup: the crier binary, the credential store, staging, optional tools, then `crier platforms
 -- --json` (plain environment: what each ticked platform is missing besides its credentials) and
 -- `crier ping --json` (credentials in the environment). rows() is what the dialog shows.
@@ -47,7 +60,7 @@ function M.new(deps)
 		if p then
 			jobs[#jobs + 1] = { process = p, kind = kind }
 		else
-			rows[#rows + 1] = { target = kind, ok = false, error = scrub(e.message) }
+			rows[#rows + 1] = error_row(kind, e, scrub)
 		end
 	end
 	function self.start(model, executable, plan)
@@ -60,20 +73,21 @@ function M.new(deps)
 		complete = false
 		cleanup_records = {}
 		check_run = plan.run
+		local staged = model.values["stage.mode"] ~= "none"
 		rows = {
-			{ target = "crier", ok = true, message = executable },
-			{ target = "keyring", warning = true, message = "checking…" },
-			{
-				target = "stage",
-				ok = model.values["stage.mode"] == "none",
-				warning = model.values["stage.mode"] ~= "none",
-				message = model.values["stage.mode"] == "none" and "Staging is not enabled" or "checking…",
-			},
+			own_row("crier", { ok = true, message = executable }),
+			own_row("keyring", { warning = true }, "checking"),
+			own_row("stage", { ok = not staged, warning = staged }, staged and "checking" or "check_staging_disabled"),
 		}
 		jobs = {}
 		local sandbox = deps.env.sandbox_status(deps.fs)
 		if sandbox.kind ~= "native" then
-			rows[#rows + 1] = { target = sandbox.kind, ok = sandbox.ok, warning = sandbox.ok, message = scrub(sandbox.message) }
+			rows[#rows + 1] = own_row(sandbox.kind, {
+				ok = sandbox.ok,
+				warning = sandbox.ok,
+				message = scrub(sandbox.message),
+				message_text = sandbox.message_text,
+			})
 		end
 		for _, item in ipairs({
 			{
@@ -95,15 +109,23 @@ function M.new(deps)
 					binary = item.default
 				end
 				local found = deps.find_binary(binary)
-				rows[#rows + 1] =
-					{ target = item.target, ok = found ~= nil, message = found or ("Cannot find " .. tostring(binary)) }
+				local entry = own_row(item.target, { ok = found ~= nil, message = found })
+				if not found then
+					i18n.with(entry, "check_not_found", tostring(binary))
+				end
+				rows[#rows + 1] = entry
 			end
+		end
+		-- crier starts a tunnel only for its stage server; under any other Stage mode it never runs.
+		local tunnel = model.values["stage.server.tunnel.mode"]
+		if tunnel and tunnel ~= "" and tunnel ~= "none" and model.values["stage.mode"] ~= "server" then
+			rows[#rows + 1] = own_row("tunnel", { warning = true }, "check_tunnel_needs_server", tostring(tunnel))
 		end
 		-- Config and explicit enables match the snapshot checked by this request.
 		for path, data in pairs(plan.files or {}) do
 			local ok, e = deps.fs.write(path, data)
 			if not ok then
-				rows[#rows + 1] = { target = "config", ok = false, error = scrub(e.message) }
+				rows[#rows + 1] = error_row("config", e, scrub)
 				pending = false
 				return nil, e
 			end
@@ -123,26 +145,22 @@ function M.new(deps)
 					return
 				end
 				local backend = deps.secrets.backend_status()
-				rows[2] = {
-					target = "keyring",
+				rows[2] = own_row("keyring", {
 					ok = not e and backend.state == "ready",
 					warning = backend.state == "checking",
 					message = backend.label,
+					message_text = backend.label_text,
 					error = e and scrub(e.message),
-				}
+					error_text = e and e.message_text,
+				})
 				if e then
-					rows[#rows + 1] = { target = "keyring", ok = false, error = scrub(e.message) }
+					rows[#rows + 1] = error_row("keyring", e, scrub)
 				else
 					if verified_base then
 						local current, read_error = base.fingerprint(deps.fs, plan.base_config)
 						if current ~= verified_base then
-							rows[#rows + 1] = {
-								target = "config",
-								ok = false,
-								error = scrub(
-									read_error and read_error.message or "Base configuration changed while it was being checked"
-								),
-							}
+							rows[#rows + 1] = read_error and error_row("config", read_error, scrub)
+								or i18n.set(own_row("config", { ok = false }), "error", "check_base_changed")
 							pending = false
 							return
 						end
@@ -155,13 +173,18 @@ function M.new(deps)
 		if plan.base_config then
 			local inspection, e = base.inspect(deps.spawner, deps.fs, plan)
 			if not inspection then
-				rows[#rows + 1] = { target = "config", ok = false, error = scrub(e.message) }
+				rows[#rows + 1] = error_row("config", e, scrub)
 				pending = false
 				return true
 			end
 			verified_base = inspection.fingerprint
-			jobs[#jobs + 1] = { inspection = inspection, process = inspection.process, kind = "base_config", plan = plan,
-				after = probe_credentials }
+			jobs[#jobs + 1] = {
+				inspection = inspection,
+				process = inspection.process,
+				kind = "base_config",
+				plan = plan,
+				after = probe_credentials,
+			}
 		else
 			probe_credentials()
 		end
@@ -204,7 +227,7 @@ function M.new(deps)
 		end
 		if r.code ~= 0 and #results == 0 then
 			rows[#rows + 1] =
-				{ target = "ping", ok = false, error = scrub(r.stderr), message = "Check failed with code " .. r.code }
+				own_row("ping", { ok = false, error = scrub(r.stderr) }, "check_failed_code", tostring(r.code))
 		end
 	end
 	local function base_done(job)
@@ -214,13 +237,13 @@ function M.new(deps)
 		end
 		if stdout == false then
 			cancel(job.process)
-			rows[#rows + 1] = { target = "config", ok = false, error = scrub(e.message) }
+			rows[#rows + 1] = error_row("config", e, scrub)
 			pending = false
 			return true
 		end
 		local names, parse_error = plans.disable_base_custom(job.plan, stdout)
 		if not names then
-			rows[#rows + 1] = { target = "config", ok = false, error = scrub(parse_error.message) }
+			rows[#rows + 1] = error_row("config", parse_error, scrub)
 			pending = false
 		else
 			job.after()
@@ -254,7 +277,7 @@ function M.new(deps)
 					table.remove(jobs, i)
 					if e then
 						cancel(job.process)
-						rows[#rows + 1] = { target = job.kind, ok = false, error = scrub(e.message) }
+						rows[#rows + 1] = error_row(job.kind, e, scrub)
 					elseif job.kind == "platforms" then
 						platform_rows(json.decode(r.stdout or ""))
 					else
@@ -264,8 +287,8 @@ function M.new(deps)
 			end
 		end
 		if not pending and #jobs == 0 and check_run and not complete then
-			if rows[3].message == "checking…" then
-				rows[3] = { target = "stage", ok = true, message = "This staging mode has no credentials to check" }
+			if rows[3].message_text and rows[3].message_text.key == "checking" then
+				rows[3] = own_row("stage", { ok = true }, "check_stage_no_credentials")
 			end
 			complete = true
 			local failed = summarise()
@@ -288,7 +311,7 @@ function M.new(deps)
 			for _, r in ipairs(rows) do
 				out[#out + 1] = r
 			end
-			out[#out + 1] = { target = "setup", message = "checking…", warning = true }
+			out[#out + 1] = own_row("setup", { warning = true }, "checking")
 			return out
 		end
 		return rows

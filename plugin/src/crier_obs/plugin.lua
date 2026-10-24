@@ -354,7 +354,11 @@ function M.new(deps)
 			log = log,
 			cached_secrets = extra.cached_secrets,
 			on_base_custom = function(names, fingerprint)
-				if session and session.generation == session_generation and credential_revision == snapshot_revision then
+				if
+					session
+					and session.generation == session_generation
+					and credential_revision == snapshot_revision
+				then
 					session.base_custom_names = names
 					session.base_fingerprint = fingerprint
 					session.base_config_ready = true
@@ -418,7 +422,8 @@ function M.new(deps)
 		end
 		local backend = secrets.backend_status()
 		local installing = install.state == "installing" or install.state == "failed" or install.state == "cancelled"
-		local crier = installing and install.message or r.message
+		local crier = i18n.shown(t, installing and install or r)
+		local keyring = i18n.shown(t, backend, "label")
 		local level = install.state == "failed" and "error"
 			or (not installing and (r.state == "missing" or r.state == "failed")) and "error"
 			or (not installing and r.state == "outdated") and "warning"
@@ -426,7 +431,7 @@ function M.new(deps)
 		return {
 			crier = crier,
 			crier_level = level,
-			keyring = backend.state == "checking" and t("keyring_state", backend.label, t("checking")) or backend.label,
+			keyring = backend.state == "checking" and t("keyring_state", keyring, t("checking")) or keyring,
 			last_run = last_run,
 			logs = initialized and paths.runs or t("state_unavailable", state_error or "?"),
 			update_available = r.state == "outdated",
@@ -565,14 +570,20 @@ function M.new(deps)
 			log.info(r.message)
 		elseif r.state == "outdated" then
 			log.warn(
-				"crier " .. r.version .. " at " .. r.path .. " is older than " .. version.CRIER_VERSION .. "; click Update crier",
+				"crier "
+					.. r.version
+					.. " at "
+					.. r.path
+					.. " is older than "
+					.. version.CRIER_VERSION
+					.. "; click Update crier",
 				"outdated:" .. r.path .. ":" .. r.version,
 				math.huge
 			)
 		elseif r.state == "missing" then
 			log.warn(r.message .. "; click Install crier", "crier-status")
 		elseif r.state == "failed" then
-			log.warn("crier check failed: " .. r.message)
+			log.warn(r.message)
 		end
 	end
 	local function poll_adopted()
@@ -679,7 +690,9 @@ function M.new(deps)
 		model = model_port.snapshot(data)
 		log.set_debug(model.debug)
 		loaded = true
-		log.info("crier-obs " .. version.VERSION .. " for crier " .. version.CRIER_VERSION .. "; state in " .. paths.root)
+		log.info(
+			"crier-obs " .. version.VERSION .. " for crier " .. version.CRIER_VERSION .. "; state in " .. paths.root
+		)
 		log_inherited()
 		local sandbox = env.sandbox_status(fs)
 		if sandbox.kind ~= "native" then
@@ -725,7 +738,7 @@ function M.new(deps)
 			end,
 			on_done = function(job)
 				if job.result then
-					last_run = job.result.message
+					last_run = log.scrub(i18n.shown(t, job.result) or "")
 				end
 				-- An end post that never reached crier still ends the live session's credentials.
 				if job.event == "end" and not job.spawned then
@@ -765,7 +778,9 @@ function M.new(deps)
 				end
 			end
 			if found > 0 then
-				log.info("Adopted " .. found .. " detached post" .. (found == 1 and "" or "s") .. " from an earlier load")
+				log.info(
+					"Adopted " .. found .. " detached post" .. (found == 1 and "" or "s") .. " from an earlier load"
+				)
 			end
 			runs.sweep(model.retention_days, model.retention_count)
 		end
@@ -775,6 +790,25 @@ function M.new(deps)
 		obs.timer_add(tick, 500)
 		self.scheduler = scheduler
 		self.queue = queue
+	end
+	-- Values remembered for the live session under keys the new settings no longer use (an unticked
+	-- platform, the previous credential set) leave the credential service's cache as well.
+	local function release_unused(previous, current)
+		local kept = {}
+		if previous.credential_set == current.credential_set then
+			for _, key in ipairs(builder.needs_secrets(current)) do
+				kept[key] = true
+			end
+		end
+		local dropped = {}
+		for _, key in ipairs(builder.needs_secrets(previous)) do
+			if not kept[key] then
+				dropped[#dropped + 1] = key
+			end
+		end
+		if #dropped > 0 then
+			secrets.clear_cache(previous.credential_set, dropped)
+		end
 	end
 	function self.update(data)
 		local next_model = model_port.snapshot(data)
@@ -801,6 +835,7 @@ function M.new(deps)
 				scheduler.stream.cache = {}
 				scheduler.stream.cache_ready = false
 			end
+			release_unused(model, next_model)
 		end
 		model = next_model
 		refresh_frontend()
@@ -828,7 +863,13 @@ function M.new(deps)
 			log.error(e.message)
 		end
 		if records and #records > 0 then
-			log.info("Detached " .. #records .. " running post" .. (#records == 1 and "" or "s") .. "; the next load adopts them")
+			log.info(
+				"Detached "
+					.. #records
+					.. " running post"
+					.. (#records == 1 and "" or "s")
+					.. "; the next load adopts them"
+			)
 		end
 		for _, item in ipairs(adopted) do
 			item.process.detach()

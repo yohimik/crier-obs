@@ -156,7 +156,10 @@ function M.inspect(spawner, fs, plan)
 		local current, read_error = M.fingerprint(fs, plan.base_config)
 		if current ~= fingerprint then
 			return false,
-				read_error or { kind = "configuration", message = "Base configuration changed while it was being checked" }
+				read_error or {
+					kind = "configuration",
+					message = "Base configuration changed while it was being checked",
+				}
 		end
 		return r.stdout or ""
 	end

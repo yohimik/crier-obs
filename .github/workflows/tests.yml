@@ -22,12 +22,16 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == macOS ]]; then
-            brew install luajit luarocks shellcheck actionlint
+            brew install luajit luarocks shellcheck actionlint stylua
+            # Homebrew ships its current StyLua; Linux installs the pin in tools/install_stylua.sh.
+            stylua --version
           else
             sudo apt-get update
             sudo apt-get install -y luajit libluajit-5.1-dev liblua5.1-0-dev luarocks shellcheck
             go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+            sh plugin/tools/install_stylua.sh "$HOME/.local/bin"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Install Lua dependencies
         shell: bash

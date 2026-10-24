@@ -56,7 +56,8 @@ local function counting_fs()
 	for _, name in ipairs({ "read", "write", "write_private", "create_private", "mkdir", "mkdir_private", "remove" }) do
 		local original = fs[name]
 		fs[name] = function(...)
-			counts[name:match("^read") and "reads" or "writes"] = counts[name:match("^read") and "reads" or "writes"] + 1
+			counts[name:match("^read") and "reads" or "writes"] = counts[name:match("^read") and "reads" or "writes"]
+				+ 1
 			return original(...)
 		end
 	end
@@ -134,7 +135,13 @@ local function cleanup(p, data)
 end
 describe("runtime lifecycle through native spawning #posix", function()
 	after_each(function()
-		for _, name in ipairs({ "FAKE_CRIER_LEAK", "FAKE_CRIER_EXIT", "FAKE_CRIER_OUT", "FAKE_CRIER_SLEEP", "FAKE_CRIER_IGNORE_TERM" }) do
+		for _, name in ipairs({
+			"FAKE_CRIER_LEAK",
+			"FAKE_CRIER_EXIT",
+			"FAKE_CRIER_OUT",
+			"FAKE_CRIER_SLEEP",
+			"FAKE_CRIER_IGNORE_TERM",
+		}) do
 			ffi.C.unsetenv(name)
 		end
 	end)
@@ -330,7 +337,11 @@ describe("runtime lifecycle through native spawning #posix", function()
 		-- Each event carries only its own file.
 		for _, item in ipairs(list) do
 			local doc = item.doc
-			assert.equal(doc.event == "recording_end" and "/tmp/saved recording.mp4" or "", doc.recording_path, doc.event)
+			assert.equal(
+				doc.event == "recording_end" and "/tmp/saved recording.mp4" or "",
+				doc.recording_path,
+				doc.event
+			)
 			assert.equal(doc.event == "replay" and "/tmp/clip 🔴.mp4" or "", doc.replay_path, doc.event)
 		end
 		for _, line in ipairs(obs.logs) do

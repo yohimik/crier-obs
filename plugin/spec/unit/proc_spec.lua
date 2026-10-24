@@ -6,10 +6,8 @@ local posix = require("crier_obs.proc.posix")
 local spawner = require("crier_obs.proc.spawner")
 local resolver = require("crier_obs.proc.resolver")
 local host_env = require("crier_obs.ports.env").new({})
-ffi.cdef(
-	[[int usleep(unsigned int); char *getcwd(char*,unsigned long);
-int open(const char*,int,...); int mkdir(const char*,unsigned int); int rmdir(const char*); int kill(int,int);]]
-)
+ffi.cdef([[int usleep(unsigned int); char *getcwd(char*,unsigned long);
+int open(const char*,int,...); int mkdir(const char*,unsigned int); int rmdir(const char*); int kill(int,int);]])
 local function wait(p)
 	for _ = 1, 2000 do
 		local r, e = p.poll()
@@ -139,8 +137,9 @@ describe("native POSIX process isolation #posix", function()
 			}))
 			assert.equal(code, wait(p).code)
 		end
-		local p =
-			assert(native.spawn({ executable = "/nonexistent/crier", env = host_env.inherited(), capture_stderr = true }))
+		local p = assert(
+			native.spawn({ executable = "/nonexistent/crier", env = host_env.inherited(), capture_stderr = true })
+		)
 		assert.equal(127, wait(p).code)
 	end)
 	it("closes inherited descriptors beyond standard streams", function()

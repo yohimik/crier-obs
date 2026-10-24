@@ -40,7 +40,11 @@ describe("crier exit codes and reports", function()
 		assert.equal("timeout", timed.kind)
 		assert.equal("error", timed.level)
 		assert.is_false(timed.ok)
-		assert.same({ kind = "timeout", message = "crier exceeded the run timeout" }, errors.timeout())
+		assert.same({
+			kind = "timeout",
+			message = "crier exceeded the run timeout",
+			message_text = { key = "exit_timeout", n = 0 },
+		}, errors.timeout())
 	end)
 
 	it("names the platforms that failed and summarises dry runs", function()
@@ -59,7 +63,10 @@ describe("crier exit codes and reports", function()
 		}, log)
 		assert.equal("Dry run planned 2 posts: telegram, x", dry.summary)
 		assert.equal("Dry run planned 0 posts", report.parse({ code = 0, stdout = '{"dryRun":true}' }).summary)
-		assert.equal("Dry run planned 1 post: x", report.parse({ code = 0, stdout = '{"dryRun":true,"plan":[{"platform":"x"}]}' }).summary)
+		assert.equal(
+			"Dry run planned 1 post: x",
+			report.parse({ code = 0, stdout = '{"dryRun":true,"plan":[{"platform":"x"}]}' }).summary
+		)
 		local lines = {}
 		for i = 1, 30 do
 			lines[i] = "line " .. i

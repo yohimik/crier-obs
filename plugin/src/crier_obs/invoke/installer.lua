@@ -1,5 +1,6 @@
 local ffi = require("ffi")
 local cmdline = require("crier_obs.proc.cmdline_windows")
+local i18n = require("crier_obs.i18n")
 local M = {}
 local function shell(s)
 	return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -9,7 +10,8 @@ local function ps(s)
 end
 -- Install crier / Update crier: runs crier's official installer pinned to the registry's crier tag into
 -- <state>/bin, removes the macOS quarantine attribute, then waits for the resolver's version check.
--- status() is { state = idle | installing | installed | failed | cancelled, message }.
+-- status() is { state = idle | installing | installed | failed | cancelled, message, message_text }:
+-- message is English for the log, message_text what the dialog's crier row shows.
 function M.new(deps)
 	local env = deps.env or {}
 	local platform = env.os or ffi.os
@@ -18,16 +20,21 @@ function M.new(deps)
 	local process, phase, explicit
 	local current = { state = "idle", message = "" }
 	local self = {}
-	local function failed(message, code)
+	-- detail is what went wrong: a message (i18n.message, or a status's message_text) or plain text.
+	local function failed(detail, code)
 		phase = nil
-		current = { state = "failed", message = "Install failed: " .. log.scrub(message), code = code }
+		if type(detail) ~= "table" then
+			detail = log.scrub(detail)
+		end
+		current = i18n.with({ state = "failed", code = code }, "install_failed", detail)
+		current.message = log.scrub(current.message)
 		log.error(current.message)
 		return current
 	end
 	local function spawn(plan)
 		local p, e = deps.spawner.spawn(plan)
 		if not p then
-			failed(e.message)
+			failed(i18n.of(e))
 			return nil, e
 		end
 		process = p
@@ -45,7 +52,8 @@ function M.new(deps)
 		explicit = crier_path ~= "" and crier_path or nil
 		if explicit then
 			log.warn(
-				"Install crier installs into the crier-obs folder; the crier path set in Advanced still wins: " .. explicit
+				"Install crier installs into the crier-obs folder; the crier path set in Advanced still wins: "
+					.. explicit
 			)
 		end
 		local dir = deps.state_dir .. (platform == "Windows" and "\\bin" or "/bin")
@@ -86,7 +94,7 @@ function M.new(deps)
 					.. ' /bin/sh -c "$script"',
 			}
 		end
-		current = { state = "installing", message = "Installing crier " .. pin .. "…" }
+		current = i18n.with({ state = "installing" }, "install_running", pin)
 		log.info("Installing crier " .. pin .. " into " .. dir)
 		phase = "install"
 		return spawn(plan)
@@ -94,10 +102,10 @@ function M.new(deps)
 	local function verify()
 		local p, pe = deps.resolver.probe(explicit)
 		if not p then
-			return failed(pe.message)
+			return failed(i18n.of(pe))
 		end
 		phase = "version"
-		current.message = "Checking installed crier…"
+		i18n.with(current, "install_checking")
 		log.info("Checking the installed crier")
 		return current
 	end
@@ -107,10 +115,10 @@ function M.new(deps)
 			if status.state ~= "checking" then
 				phase = nil
 				if status.state == "ready" then
-					current = { state = "installed", message = status.message }
+					current = { state = "installed", message = status.message, message_text = status.message_text }
 					log.info("crier installed: " .. status.message)
 				else
-					failed(status.message)
+					failed(i18n.of(status))
 				end
 			end
 			return current
@@ -131,10 +139,8 @@ function M.new(deps)
 		process = nil
 		if phase == "install" then
 			if r.code ~= 0 or r.timed_out then
-				return failed(
-					r.timed_out and "Installation timed out" or (r.stderr ~= "" and r.stderr or "Installation failed"),
-					r.code
-				)
+				local detail = r.stderr ~= "" and r.stderr or i18n.message("install_exit_failed")
+				return failed(r.timed_out and i18n.message("install_timed_out") or detail, r.code)
 			end
 			if platform == "OSX" then
 				phase = "quarantine"
@@ -168,7 +174,7 @@ function M.new(deps)
 		end
 		phase = nil
 		if interrupted then
-			current = { state = "cancelled", message = "Installation cancelled because the script unloaded" }
+			current = i18n.with({ state = "cancelled" }, "install_cancelled")
 		end
 		return record
 	end

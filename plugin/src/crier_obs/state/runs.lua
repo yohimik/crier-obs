@@ -90,14 +90,11 @@ function M.new(deps)
 		if not ok then
 			return nil, e
 		end
-		return self.journal(
-			run,
-			{
-				state = result.timed_out and "timed_out" or result.code == 0 and "done" or "failed",
-				pid = result.pid,
-				drainers = result.drainers,
-			}
-		)
+		return self.journal(run, {
+			state = result.timed_out and "timed_out" or result.code == 0 and "done" or "failed",
+			pid = result.pid,
+			drainers = result.drainers,
+		})
 	end
 	function self.adopt()
 		local out = {}
@@ -122,7 +119,8 @@ function M.new(deps)
 			then
 				if rec.boot_id and boot and rec.boot_id ~= boot then
 					-- Written before a reboot: the process is gone and its exit code with it.
-					rec.state, rec.error = "failed", "OBS or the computer restarted while this run was detached; its result is unknown"
+					rec.state, rec.error =
+						"failed", "OBS or the computer restarted while this run was detached; its result is unknown"
 					rec.drainers = nil
 					write_json(dir .. "/journal.json", rec)
 				else

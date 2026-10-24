@@ -1,6 +1,7 @@
 local plans = require("crier_obs.invoke.plan")
 local report = require("crier_obs.invoke.report")
 local base = require("crier_obs.invoke.base")
+local i18n = require("crier_obs.i18n")
 local M = {}
 -- What a finished run keeps on disk and in memory. crier's --json report is small; its stderr can be
 -- megabytes at log level debug, and only its tail is ever shown, so only the tail is scrubbed.
@@ -34,10 +35,19 @@ function M.new(deps)
 		end
 		return ok, e
 	end
+	-- The last run row shows a failure the plugin words itself as it is, and wraps one passed up
+	-- from the system or a credential store in post_failed.
 	local function fail(e)
 		enter("failed")
-		self.result =
-			{ ok = false, code = 1, level = "error", message = log.scrub(e.message or tostring(e)), stderr = "" }
+		local message = log.scrub(e.message or tostring(e))
+		self.result = {
+			ok = false,
+			code = 1,
+			level = "error",
+			message = message,
+			message_text = e.message_text or i18n.message("post_failed", message),
+			stderr = "",
+		}
 		log.error(self.result.message)
 		persist({ code = 1, stdout = "", stderr = self.result.message })
 	end
@@ -58,10 +68,7 @@ function M.new(deps)
 		if self.plan.base_fingerprint then
 			local current, e = base.fingerprint(deps.fs, self.plan.base_path)
 			if not current or current ~= self.plan.base_fingerprint then
-				fail(e or {
-					kind = "configuration",
-					message = "Base configuration changed after destination checks; post skipped",
-				})
+				fail(e or i18n.with({ kind = "configuration" }, "post_base_changed"))
 				return
 			end
 		end
@@ -85,7 +92,7 @@ function M.new(deps)
 			deps.runs.journal(self.run, { state = "running", pid = p.pid, child_pid = p.child_pid })
 		if not journal_ok then
 			local pending = stop_process()
-			fail(journal_error or { kind = "filesystem", message = "Cannot journal the running post" })
+			fail(journal_error or i18n.with({ kind = "filesystem" }, "post_journal_failed"))
 			journal_cleanup(pending)
 			return
 		end
@@ -153,7 +160,9 @@ function M.new(deps)
 		)
 		-- One line per platform that did not take the post, so a partial publish names who failed.
 		for _, outcome in ipairs(self.result.failed or {}) do
-			log.warn(outcome.platform .. " did not take the post" .. (outcome.error ~= "" and ": " .. outcome.error or ""))
+			log.warn(
+				outcome.platform .. " did not take the post" .. (outcome.error ~= "" and ": " .. outcome.error or "")
+			)
 		end
 		if self.event == "test" and r.code == 0 then
 			log.info(self.result.summary)

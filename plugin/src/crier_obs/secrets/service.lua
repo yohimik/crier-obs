@@ -1,15 +1,18 @@
 local json = require("crier_obs.json")
 local ffi = require("ffi")
 local null = require("crier_obs.secrets.keyring.null")
+local i18n = require("crier_obs.i18n")
 local M = {}
+-- The i18n key of each backend's name in the credential store row.
 local LABELS = {
-	macos = "macOS Keychain",
-	windows = "Windows DPAPI (current user)",
-	linux = "Secret Service",
-	file = "Encrypted credential file",
+	macos = "keyring_macos",
+	windows = "keyring_windows",
+	linux = "keyring_linux",
+	file = "keyring_file",
 }
-local function failure(kind, message)
-	return { kind = kind, message = message }
+-- The service's own failures reach the credential status rows, so they carry a dialog message.
+local function failure(kind, key)
+	return i18n.with({ kind = kind }, key)
 end
 local function account_for(set, key)
 	set = set or "default"
@@ -21,7 +24,7 @@ local function account_for(set, key)
 		or key == ""
 		or key:find("%c")
 	then
-		return nil, failure("credential", "Invalid credential set or key")
+		return nil, failure("credential", "credential_invalid_account")
 	end
 	return set .. "/" .. key
 end
@@ -34,7 +37,7 @@ function M.new(deps)
 	local backends = deps.backends or {}
 	local platform = deps.platform or (deps.env or {}).os or ffi.os
 	local primary = platform == "OSX" and "macos" or platform == "Windows" and "windows" or "linux"
-	local unavailable_reason
+	local unavailable_reason, unavailable_text
 	if deps.backend then
 		backends[deps.backend.name] = deps.backend
 		primary = deps.backend.name
@@ -45,10 +48,12 @@ function M.new(deps)
 		if built then
 			backends[primary] = backend
 		else
-			unavailable_reason = "The " .. (LABELS[primary] or primary) .. " cannot be used: " .. tostring(backend)
+			local name = LABELS[primary] and i18n.message(LABELS[primary]) or primary
+			unavailable_text = i18n.message("keyring_unusable", name, tostring(backend))
+			unavailable_reason = i18n.render(i18n.t, unavailable_text)
 			log.error(unavailable_reason)
 			primary = "null"
-			backends.null = null.new({ reason = unavailable_reason })
+			backends.null = null.new({ reason = unavailable_reason, reason_text = unavailable_text })
 		end
 	end
 	if not backends.file then
@@ -61,7 +66,7 @@ function M.new(deps)
 		if type(decoded) == "table" then
 			index = decoded
 		else
-			index_error = err or failure("credential", "Credential index is corrupted")
+			index_error = err or failure("credential", "credential_index_corrupted")
 		end
 	end
 	local pending, cache, statuses, slots = {}, {}, {}, {}
@@ -85,7 +90,7 @@ function M.new(deps)
 				data, err = fs.read(dir .. "/index.json")
 				local decoded = data and json.decode(data)
 				if type(decoded) ~= "table" then
-					return nil, err or failure("credential", "Credential index is corrupted")
+					return nil, err or failure("credential", "credential_index_corrupted")
 				end
 				merged = decoded
 			end
@@ -103,10 +108,16 @@ function M.new(deps)
 		end
 		job.state, job.value, job.error = err and "failed" or "done", value, err
 		if err then
+			-- bound: index.json names the store, so the value is still in it while it is unavailable.
+			local unavailable_now = err.kind == "unavailable"
 			statuses[job.account] = {
-				state = err.kind == "unavailable" and "unavailable" or "not stored",
+				state = unavailable_now and "unavailable" or "not stored",
+				bound = unavailable_now and index[job.account] ~= nil or nil,
 				backend = backend,
 				message = err.message,
+				message_text = err.message_text,
+				reason = err.reason,
+				reason_text = err.reason_text,
 			}
 		elseif job.operation == "forget" then
 			statuses[job.account] = { state = "not stored" }
@@ -125,7 +136,7 @@ function M.new(deps)
 	end
 	local function enqueue(set, key, operation, value, callback, remember)
 		if closed then
-			local err = failure("cancelled", "Credential service is closed")
+			local err = failure("cancelled", "credential_service_closed")
 			if callback then
 				callback(nil, err)
 			end
@@ -174,7 +185,7 @@ function M.new(deps)
 			value = value:match("^%s*(.-)%s*$")
 		end
 		if not account or type(value) ~= "string" or value == "" then
-			local job = { state = "failed", error = err or failure("missing", "Enter a credential before saving") }
+			local job = { state = "failed", error = err or failure("missing", "credential_empty") }
 			if callback then
 				callback(nil, job.error)
 			end
@@ -234,16 +245,23 @@ function M.new(deps)
 	end
 	function self.backend_status()
 		local state = closed and "unavailable" or ready and "ready" or "checking"
-		local label = LABELS[primary]
+		local text = LABELS[primary] and i18n.message(LABELS[primary])
 		if primary == "file" and platform ~= "Windows" then
-			label = label .. " (Secret Service unavailable)"
+			text = i18n.message("keyring_file_fallback", text)
 		end
-		return { name = primary, state = state, label = label or unavailable_reason, reason = unavailable_reason }
+		text = text or unavailable_text
+		return {
+			name = primary,
+			state = state,
+			label = text and i18n.render(i18n.t, text),
+			label_text = text,
+			reason = unavailable_reason,
+		}
 	end
 	function self.status(set, key)
 		local account, err = account_for(set, key)
 		if not account then
-			return { state = "unavailable", message = err.message }
+			return { state = "unavailable", message = err.message, message_text = err.message_text }
 		end
 		if not statuses[account] then
 			statuses[account] = { state = "checking" }
@@ -255,7 +273,17 @@ function M.new(deps)
 		local account = account_for(set, key)
 		return account and pending[account]
 	end
-	function self.clear_cache()
+	-- Forgets remembered values: the given keys of a credential set, or every value.
+	function self.clear_cache(set, keys)
+		if keys then
+			for _, key in ipairs(keys) do
+				local account = account_for(set, key)
+				if account then
+					cache[account] = nil
+				end
+			end
+			return
+		end
 		for key in pairs(cache) do
 			cache[key] = nil
 		end
@@ -285,6 +313,16 @@ function M.new(deps)
 	local function unavailable(name)
 		return not backends[name] or (name == "linux" and not linux_available)
 	end
+	-- A store that cannot be reached now; reason names it for the credential status row.
+	local function out_of_reach(key, name)
+		local err = failure("unavailable", key)
+		if LABELS[name] then
+			i18n.set(err, "reason", LABELS[name])
+		else
+			err.reason = name
+		end
+		return err
+	end
 	-- Walks the bound backend, or the primary then the file store, until one has the account.
 	-- read(backend, account, done) is the backend's lookup or exists.
 	local function search(job, read, found)
@@ -300,12 +338,7 @@ function M.new(deps)
 			end
 			if unavailable(name) then
 				if bound then
-					finish(
-						job,
-						nil,
-						failure("unavailable", "Stored credential backend is unavailable; unlock or restore it"),
-						name
-					)
+					finish(job, nil, out_of_reach("credential_backend_locked", name), name)
 				else
 					next_backend()
 				end
@@ -320,7 +353,7 @@ function M.new(deps)
 				elseif err and err.kind ~= "missing" then
 					finish(job, nil, err, name)
 				elseif bound then
-					finish(job, nil, failure("missing", "Stored credential is missing; re-enter it"), name)
+					finish(job, nil, failure("missing", "credential_missing"), name)
 				else
 					next_backend()
 				end
@@ -349,7 +382,7 @@ function M.new(deps)
 	local function commit(job)
 		local name = index[job.account] or primary
 		if unavailable(name) then
-			finish(job, nil, failure("unavailable", "Stored credential backend is unavailable; restore it before saving"), name)
+			finish(job, nil, out_of_reach("credential_backend_unsaved", name), name)
 			return
 		end
 		local backend = backends[name]
@@ -358,7 +391,7 @@ function M.new(deps)
 				return
 			end
 			if not ok then
-				finish(job, nil, err or failure("credential", "Credential could not be saved"), name)
+				finish(job, nil, err or failure("credential", "credential_not_saved"), name)
 				return
 			end
 			backend.lookup(job.account, function(value, lookup_err)
@@ -366,7 +399,7 @@ function M.new(deps)
 					return
 				end
 				if value ~= job.value then
-					finish(job, nil, lookup_err or failure("credential", "Credential verification failed; it was not saved"), name)
+					finish(job, nil, lookup_err or failure("credential", "credential_unverified"), name)
 					return
 				end
 				local saved, save_err = persist(job.account, name)
@@ -408,7 +441,7 @@ function M.new(deps)
 			end
 			seen[name] = true
 			if not backends[name] then
-				first_error = first_error or failure("unavailable", "Stored credential backend is unavailable")
+				first_error = first_error or failure("unavailable", "credential_backend_unavailable")
 				next_backend()
 				return
 			end
