@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+  # crier-sync dispatches this on its pin-bump branch: its GITHUB_TOKEN pull request triggers nothing.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
