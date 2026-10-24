@@ -1629,6 +1629,6 @@ timer_remove
 ]]
 local set = {}
 for name in names:gmatch("[%w_]+") do
-  set[name] = true
+	set[name] = true
 end
 return set

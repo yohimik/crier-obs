@@ -1,0 +1,14 @@
+# The style most of src/ was already written in: StyLua's defaults, spelled out, parsing LuaJIT.
+# tools/lint.sh runs `stylua --check src spec tools`; .styluaignore leaves out the generated registry.
+syntax = "LuaJIT"
+column_width = 120
+line_endings = "Unix"
+indent_type = "Tabs"
+indent_width = 4
+quote_style = "AutoPreferDouble"
+call_parentheses = "Always"
+collapse_simple_statement = "Never"
+space_after_function_names = "Never"
+
+[sort_requires]
+enabled = false

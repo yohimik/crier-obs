@@ -354,7 +354,11 @@ function M.new(deps)
 			log = log,
 			cached_secrets = extra.cached_secrets,
 			on_base_custom = function(names, fingerprint)
-				if session and session.generation == session_generation and credential_revision == snapshot_revision then
+				if
+					session
+					and session.generation == session_generation
+					and credential_revision == snapshot_revision
+				then
 					session.base_custom_names = names
 					session.base_fingerprint = fingerprint
 					session.base_config_ready = true
@@ -565,7 +569,13 @@ function M.new(deps)
 			log.info(r.message)
 		elseif r.state == "outdated" then
 			log.warn(
-				"crier " .. r.version .. " at " .. r.path .. " is older than " .. version.CRIER_VERSION .. "; click Update crier",
+				"crier "
+					.. r.version
+					.. " at "
+					.. r.path
+					.. " is older than "
+					.. version.CRIER_VERSION
+					.. "; click Update crier",
 				"outdated:" .. r.path .. ":" .. r.version,
 				math.huge
 			)
@@ -679,7 +689,9 @@ function M.new(deps)
 		model = model_port.snapshot(data)
 		log.set_debug(model.debug)
 		loaded = true
-		log.info("crier-obs " .. version.VERSION .. " for crier " .. version.CRIER_VERSION .. "; state in " .. paths.root)
+		log.info(
+			"crier-obs " .. version.VERSION .. " for crier " .. version.CRIER_VERSION .. "; state in " .. paths.root
+		)
 		log_inherited()
 		local sandbox = env.sandbox_status(fs)
 		if sandbox.kind ~= "native" then
@@ -765,7 +777,9 @@ function M.new(deps)
 				end
 			end
 			if found > 0 then
-				log.info("Adopted " .. found .. " detached post" .. (found == 1 and "" or "s") .. " from an earlier load")
+				log.info(
+					"Adopted " .. found .. " detached post" .. (found == 1 and "" or "s") .. " from an earlier load"
+				)
 			end
 			runs.sweep(model.retention_days, model.retention_count)
 		end
@@ -828,7 +842,13 @@ function M.new(deps)
 			log.error(e.message)
 		end
 		if records and #records > 0 then
-			log.info("Detached " .. #records .. " running post" .. (#records == 1 and "" or "s") .. "; the next load adopts them")
+			log.info(
+				"Detached "
+					.. #records
+					.. " running post"
+					.. (#records == 1 and "" or "s")
+					.. "; the next load adopts them"
+			)
 		end
 		for _, item in ipairs(adopted) do
 			item.process.detach()

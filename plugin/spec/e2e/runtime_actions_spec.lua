@@ -334,9 +334,13 @@ describe("dialog actions and recovery", function()
 		finish(p, data)
 	end)
 	it("still reports a post's missing crier right after the status row said it is not installed", function()
-		local p, data = fixture({ missing = true, resolver_state = { state = "missing", message = "crier is not installed" } })
+		local p, data =
+			fixture({ missing = true, resolver_state = { state = "missing", message = "crier is not installed" } })
 		p.tick()
-		assert.same({ "crier-obs: crier is not installed; click Install crier" }, lines(obs.LOG_WARNING, "click Install"))
+		assert.same(
+			{ "crier-obs: crier is not installed; click Install crier" },
+			lines(obs.LOG_WARNING, "click Install")
+		)
 		p.callbacks.post()
 		assert.same({ "crier-obs: missing crier" }, lines(obs.LOG_ERROR, "missing crier"))
 		finish(p, data)
@@ -424,7 +428,8 @@ describe("dialog actions and recovery", function()
 		end
 		assert.is_true(cancelled)
 		finish(p, data)
-		p, data, state = fixture({ adopt = { { pid = 1, event = "start", created_at = os.time() } }, adopt_pending = true })
+		p, data, state =
+			fixture({ adopt = { { pid = 1, event = "start", created_at = os.time() } }, adopt_pending = true })
 		finish(p, data)
 		assert.is_true(state.records[1].detached)
 	end)
@@ -447,8 +452,12 @@ describe("dialog actions and recovery", function()
 	it("shows an installer failure in the crier row and logs the outdated crier once", function()
 		local p, data, state = fixture({
 			install = { state = "failed", message = "Install failed: sha256 digest mismatch" },
-			resolver_state = { state = "outdated", version = "1.0.0", path = "/fake/crier",
-				message = "crier 1.0.0 at /fake/crier (older than 1.1.1)" },
+			resolver_state = {
+				state = "outdated",
+				version = "1.0.0",
+				path = "/fake/crier",
+				message = "crier 1.0.0 at /fake/crier (older than 1.1.1)",
+			},
 		})
 		local status = p.status()
 		assert.equal("Install failed: sha256 digest mismatch", status.crier)
@@ -464,7 +473,8 @@ describe("dialog actions and recovery", function()
 		state.install.state, state.install.message = "idle", ""
 		assert.equal("crier 1.0.0 at /fake/crier (older than 1.1.1)", p.status().crier)
 		assert.equal("warning", p.status().crier_level)
-		state.resolver.state, state.resolver.version, state.resolver.message = "ready", "1.1.1", "crier 1.1.1 at /fake/crier"
+		state.resolver.state, state.resolver.version, state.resolver.message =
+			"ready", "1.1.1", "crier 1.1.1 at /fake/crier"
 		p.tick()
 		assert.same({ "crier-obs: crier 1.1.1 at /fake/crier" }, lines(obs.LOG_INFO, "crier 1.1.1 at"))
 		finish(p, data)
@@ -492,7 +502,10 @@ describe("dialog actions and recovery", function()
 		p.tick()
 		obs.emit(obs.OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
 		assert.equal(0, #state.spawned)
-		assert.same({ "crier-obs: quit post skipped: credentials are not ready" }, lines(obs.LOG_WARNING, "quit post skipped"))
+		assert.same(
+			{ "crier-obs: quit post skipped: credentials are not ready" },
+			lines(obs.LOG_WARNING, "quit post skipped")
+		)
 		finish(p, data)
 		local resolved = 0
 		p, data = fixture({ pending_secret = "new" })

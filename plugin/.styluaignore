@@ -1,0 +1,2 @@
+# Written by tools/gen_registry.lua and compared byte for byte by tools/registry_gate.sh.
+src/crier_obs/registry/*.lua

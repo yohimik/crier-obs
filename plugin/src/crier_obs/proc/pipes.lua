@@ -15,7 +15,8 @@ function M.new(deps)
 	local K = consts.of(deps.platform, deps.arch)
 	local self = {}
 	-- One set of signal masks per pool: writes happen on one thread at a time (the heartbeat or a callback).
-	local mask, old, pending, signal = ffi.new("uint64_t[16]"), ffi.new("uint64_t[16]"), ffi.new("uint64_t[16]"), ffi.new("int[1]")
+	local mask, old, pending, signal =
+		ffi.new("uint64_t[16]"), ffi.new("uint64_t[16]"), ffi.new("uint64_t[16]"), ffi.new("int[1]")
 	local function safe_write(fd, data, size)
 		-- SIGPIPE is thread-local blocked during write, so a closed keyring pipe cannot kill OBS.
 		C.sigemptyset(mask)

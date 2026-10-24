@@ -153,7 +153,9 @@ function M.new(deps)
 		)
 		-- One line per platform that did not take the post, so a partial publish names who failed.
 		for _, outcome in ipairs(self.result.failed or {}) do
-			log.warn(outcome.platform .. " did not take the post" .. (outcome.error ~= "" and ": " .. outcome.error or ""))
+			log.warn(
+				outcome.platform .. " did not take the post" .. (outcome.error ~= "" and ": " .. outcome.error or "")
+			)
 		end
 		if self.event == "test" and r.code == 0 then
 			log.info(self.result.summary)

@@ -1,5 +1,5 @@
 -- Bundled default template; mirrored from plugin/templates/live.html.
-local live=[====[
+local live = [====[
 <!doctype html>
 <html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box}body{margin:0;width:1080px;height:1080px;background:#101826;color:#fff;font-family:sans-serif}
@@ -9,4 +9,4 @@ p{font-size:34px;color:#bac9de;line-height:1.4}.url{margin-top:70px;font-size:27
 </style></head><body><main><div class="badge">{{ .event }}</div><h1>{{ .title }}</h1>
 <p>{{ .game }}</p><p>{{ .uptime }}</p><div class="url">{{ .url }}</div></main></body></html>
 ]====]
-return {live=live,["live.html"]=live}
+return { live = live, ["live.html"] = live }

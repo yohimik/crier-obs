@@ -6,7 +6,8 @@ local i18n = require("crier_obs.i18n")
 local meta = require("crier_obs.registry.meta")
 local M = {}
 local TRIGGERS = { "start", "end", "interval", "quit", "rec_start", "rec_end", "replay" }
-local ADVANCED_FIELDS = { "base_config", "crier_path", "credential_set", "debug", "timeout", "retention_days", "retention_count" }
+local ADVANCED_FIELDS =
+	{ "base_config", "crier_path", "credential_set", "debug", "timeout", "retention_days", "retention_count" }
 local POSTING_FIELDS = { "title", "game", "url", "custom_fields" }
 local RESULT_ROWS = 32
 local function field(key)
@@ -104,8 +105,12 @@ function M.new(deps)
 				nil
 			)
 		else
-			p =
-				obs.obs_properties_add_text(props, name, label, d.multiline and obs.OBS_TEXT_MULTILINE or obs.OBS_TEXT_DEFAULT)
+			p = obs.obs_properties_add_text(
+				props,
+				name,
+				label,
+				d.multiline and obs.OBS_TEXT_MULTILINE or obs.OBS_TEXT_DEFAULT
+			)
 		end
 		-- Value fields have no modified callback: OBS treats a missing one as "no refresh".
 		return describe(p, t(d.description or d.label or name))
@@ -132,7 +137,12 @@ function M.new(deps)
 			p = obs.obs_properties_add_text(props, name, t(label), obs.OBS_TEXT_INFO)
 			set_row(state, name, text)
 		else
-			p = obs.obs_properties_add_text(props, name, label and (t(label) .. ": " .. text) or text, obs.OBS_TEXT_INFO)
+			p = obs.obs_properties_add_text(
+				props,
+				name,
+				label and (t(label) .. ": " .. text) or text,
+				obs.OBS_TEXT_INFO
+			)
 		end
 		obs.obs_property_text_set_info_type(p, kind or obs.OBS_TEXT_INFO_NORMAL)
 		obs.obs_property_text_set_info_word_wrap(p, true)
@@ -194,7 +204,12 @@ function M.new(deps)
 		)
 		for _, d in ipairs(state.list) do
 			if d.secret then
-				update_row(state, d.key .. ".status", "credential_status", credential_text((status.secrets or {})[d.key]))
+				update_row(
+					state,
+					d.key .. ".status",
+					"credential_status",
+					credential_text((status.secrets or {})[d.key])
+				)
 			end
 		end
 		local rows = status.results or {}
@@ -357,7 +372,10 @@ function M.new(deps)
 			end
 		end
 		state.post_to = obs.obs_properties_create()
-		describe(obs.obs_properties_add_group(props, "cobs.post_to", t("post_to"), obs.OBS_GROUP_NORMAL, state.post_to), t("post_to"))
+		describe(
+			obs.obs_properties_add_group(props, "cobs.post_to", t("post_to"), obs.OBS_GROUP_NORMAL, state.post_to),
+			t("post_to")
+		)
 		for _, custom in ipairs({ false, true }) do
 			for _, d in ipairs(state.list) do
 				if d.platform and d.key:match("%.enabled$") and (d.custom or false) == custom then
@@ -412,9 +430,12 @@ function M.new(deps)
 		local function guide_for(name)
 			if not guided[name] then
 				guided[name] = true
-				extra(url(props, "cobs.guide." .. name, "guide", docs .. "publishing/" .. name .. ".md"), function(snapshot)
-					return snapshot.section == "platforms" and snapshot.platform == name
-				end)
+				extra(
+					url(props, "cobs.guide." .. name, "guide", docs .. "publishing/" .. name .. ".md"),
+					function(snapshot)
+						return snapshot.section == "platforms" and snapshot.platform == name
+					end
+				)
 			end
 		end
 		local staging_guidance = false
@@ -422,7 +443,10 @@ function M.new(deps)
 			if d.section == "staging" and not staging_guidance then
 				staging_guidance = true
 				extra(info(state, props, "cobs.tunnel_guidance", nil, t("tunnel_guidance")), in_section("staging"))
-				extra(url(props, "cobs.install.ngrok", "install_ngrok", "https://ngrok.com/downloads"), in_section("staging"))
+				extra(
+					url(props, "cobs.install.ngrok", "install_ngrok", "https://ngrok.com/downloads"),
+					in_section("staging")
+				)
 				extra(
 					url(props, "cobs.install.zrok", "install_zrok", "https://docs.zrok.io/docs/getting-started/"),
 					in_section("staging")
@@ -431,14 +455,20 @@ function M.new(deps)
 					url(props, "cobs.guide.staging", "staging_guide", docs .. "configuration/stage/README.md"),
 					in_section("staging")
 				)
-				extra(url(props, "cobs.guide.tunnels", "tunnel_guide", docs .. "staging/tunnels.md"), in_section("staging"))
+				extra(
+					url(props, "cobs.guide.tunnels", "tunnel_guide", docs .. "staging/tunnels.md"),
+					in_section("staging")
+				)
 			end
 			if d.section == "advanced" and not state.advanced then
 				state.advanced = true
 				for _, key in ipairs(ADVANCED_FIELDS) do
 					extra(value_property(props, "cobs." .. key, field(key)), in_section("advanced"))
 					if key == "credential_set" then
-						extra(button(props, "cobs.forget_all", "forget_all", handler("forget_all")), in_section("advanced"))
+						extra(
+							button(props, "cobs.forget_all", "forget_all", handler("forget_all")),
+							in_section("advanced")
+						)
 					end
 				end
 			end
@@ -450,7 +480,10 @@ function M.new(deps)
 				guide_for(d.platform)
 			end
 			if d.section == "custom" and (not following or following.section ~= "custom") then
-				extra(url(props, "cobs.guide.custom", "custom_guide", docs .. "publishing/custom.md"), in_section("custom"))
+				extra(
+					url(props, "cobs.guide.custom", "custom_guide", docs .. "publishing/custom.md"),
+					in_section("custom")
+				)
 				state.custom_guide = true
 			end
 		end

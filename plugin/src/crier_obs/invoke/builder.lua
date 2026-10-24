@@ -81,7 +81,8 @@ local function clip_platforms(model, warnings)
 		return nil, { kind = "skipped", message = message:format(table.concat(refused, ", ")) }
 	end
 	if #refused > 0 then
-		warnings[#warnings + 1] = "Clip post leaves out platforms that cannot post video: " .. table.concat(refused, ", ")
+		warnings[#warnings + 1] = "Clip post leaves out platforms that cannot post video: "
+			.. table.concat(refused, ", ")
 	end
 	return platforms
 end

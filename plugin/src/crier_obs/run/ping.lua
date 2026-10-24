@@ -73,7 +73,8 @@ function M.new(deps)
 		jobs = {}
 		local sandbox = deps.env.sandbox_status(deps.fs)
 		if sandbox.kind ~= "native" then
-			rows[#rows + 1] = { target = sandbox.kind, ok = sandbox.ok, warning = sandbox.ok, message = scrub(sandbox.message) }
+			rows[#rows + 1] =
+				{ target = sandbox.kind, ok = sandbox.ok, warning = sandbox.ok, message = scrub(sandbox.message) }
 		end
 		for _, item in ipairs({
 			{
@@ -140,7 +141,8 @@ function M.new(deps)
 								target = "config",
 								ok = false,
 								error = scrub(
-									read_error and read_error.message or "Base configuration changed while it was being checked"
+									read_error and read_error.message
+										or "Base configuration changed while it was being checked"
 								),
 							}
 							pending = false
@@ -160,8 +162,13 @@ function M.new(deps)
 				return true
 			end
 			verified_base = inspection.fingerprint
-			jobs[#jobs + 1] = { inspection = inspection, process = inspection.process, kind = "base_config", plan = plan,
-				after = probe_credentials }
+			jobs[#jobs + 1] = {
+				inspection = inspection,
+				process = inspection.process,
+				kind = "base_config",
+				plan = plan,
+				after = probe_credentials,
+			}
 		else
 			probe_credentials()
 		end

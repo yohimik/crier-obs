@@ -141,7 +141,8 @@ function M.new(deps)
 			end
 			return nil, { kind = "missing", message = "Configured crier path does not exist" }
 		end
-		local managed = deps.state_dir and (deps.state_dir .. sep .. "bin" .. sep .. (windows and "crier.exe" or "crier"))
+		local managed = deps.state_dir
+			and (deps.state_dir .. sep .. "bin" .. sep .. (windows and "crier.exe" or "crier"))
 		if managed and fs.exists(managed) then
 			return managed
 		end

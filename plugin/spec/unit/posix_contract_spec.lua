@@ -194,7 +194,9 @@ describe("POSIX native API failure contracts #posix", function()
 			for _, options in ipairs({ { init = 12 }, { attr = 12 }, { action = 9 }, { spawn = 2 } }) do
 				allocated = {}
 				local native = posix.new({ C = fake(options), platform = "OSX" })
-				assert.is_nil(native.spawn({ executable = "/bin/crier", env = { CRIER_PUBLISH_X_TOKEN = "TOPSECRET" } }))
+				assert.is_nil(
+					native.spawn({ executable = "/bin/crier", env = { CRIER_PUBLISH_X_TOKEN = "TOPSECRET" } })
+				)
 				for _, buffer in ipairs(allocated) do
 					assert.is_nil(ffi.string(buffer, ffi.sizeof(buffer)):find("TOPSECRET", 1, true))
 				end

@@ -45,7 +45,8 @@ function M.new(deps)
 		explicit = crier_path ~= "" and crier_path or nil
 		if explicit then
 			log.warn(
-				"Install crier installs into the crier-obs folder; the crier path set in Advanced still wins: " .. explicit
+				"Install crier installs into the crier-obs folder; the crier path set in Advanced still wins: "
+					.. explicit
 			)
 		end
 		local dir = deps.state_dir .. (platform == "Windows" and "\\bin" or "/bin")

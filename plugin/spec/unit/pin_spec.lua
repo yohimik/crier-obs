@@ -60,7 +60,10 @@ describe("crier pin", function()
 		os.remove(root)
 		assert(os.execute("mkdir -p '" .. root .. "/docs' '" .. root .. "/plugin/src/crier_obs/registry'"))
 		write(root .. "/plugin/src/crier_obs/registry/meta.lua", read("src/crier_obs/registry/meta.lua"))
-		write(root .. "/plugin/src/crier_obs/version.lua", 'return { VERSION = "0.0.0-dev", CRIER_VERSION = "1.1.1" }\n')
+		write(
+			root .. "/plugin/src/crier_obs/version.lua",
+			'return { VERSION = "0.0.0-dev", CRIER_VERSION = "1.1.1" }\n'
+		)
 		local fixture = table.concat({
 			"See https://github.com/yohimik/crier/blob/v1.1.1/docs/configuration/README.md for keys.",
 			"Install: curl -fsSL https://raw.githubusercontent.com/yohimik/crier/v1.1.1/install.sh | sh",

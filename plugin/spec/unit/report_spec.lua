@@ -59,7 +59,10 @@ describe("crier exit codes and reports", function()
 		}, log)
 		assert.equal("Dry run planned 2 posts: telegram, x", dry.summary)
 		assert.equal("Dry run planned 0 posts", report.parse({ code = 0, stdout = '{"dryRun":true}' }).summary)
-		assert.equal("Dry run planned 1 post: x", report.parse({ code = 0, stdout = '{"dryRun":true,"plan":[{"platform":"x"}]}' }).summary)
+		assert.equal(
+			"Dry run planned 1 post: x",
+			report.parse({ code = 0, stdout = '{"dryRun":true,"plan":[{"platform":"x"}]}' }).summary
+		)
 		local lines = {}
 		for i = 1, 30 do
 			lines[i] = "line " .. i

@@ -349,7 +349,12 @@ function M.new(deps)
 	local function commit(job)
 		local name = index[job.account] or primary
 		if unavailable(name) then
-			finish(job, nil, failure("unavailable", "Stored credential backend is unavailable; restore it before saving"), name)
+			finish(
+				job,
+				nil,
+				failure("unavailable", "Stored credential backend is unavailable; restore it before saving"),
+				name
+			)
 			return
 		end
 		local backend = backends[name]
@@ -366,7 +371,12 @@ function M.new(deps)
 					return
 				end
 				if value ~= job.value then
-					finish(job, nil, lookup_err or failure("credential", "Credential verification failed; it was not saved"), name)
+					finish(
+						job,
+						nil,
+						lookup_err or failure("credential", "Credential verification failed; it was not saved"),
+						name
+					)
 					return
 				end
 				local saved, save_err = persist(job.account, name)

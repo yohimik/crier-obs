@@ -18,10 +18,13 @@ local function directory_C(names, layout)
 				ffi.copy(record.name, name)
 				records[i] = record
 			end
-			return { next = function()
-				at = at + 1
-				return records[at]
-			end, records = records }
+			return {
+				next = function()
+					at = at + 1
+					return records[at]
+				end,
+				records = records,
+			}
 		end
 	end
 	local function reader(kind)
@@ -119,8 +122,12 @@ describe("native ABI selection", function()
 	end)
 
 	it("opens the credential index lock without following links on every architecture", function()
-		for _, case in ipairs({ { "Linux", "arm64", 2 + 0x40 + 0x8000 }, { "Linux", "x64", 2 + 0x40 + 0x20000 },
-			{ "Linux", "mips", 2 + 0x100 + 0x20000 }, { "OSX", "arm64", 2 + 0x200 + 0x100 } }) do
+		for _, case in ipairs({
+			{ "Linux", "arm64", 2 + 0x40 + 0x8000 },
+			{ "Linux", "x64", 2 + 0x40 + 0x20000 },
+			{ "Linux", "mips", 2 + 0x100 + 0x20000 },
+			{ "OSX", "arm64", 2 + 0x200 + 0x100 },
+		}) do
 			local opened, locks = nil, {}
 			local C = {
 				open = function(_, flags, mode)
@@ -146,7 +153,10 @@ describe("native ABI selection", function()
 	end)
 
 	it("keeps the platform constants apart", function()
-		local darwin, linux, arm, mips = consts.of("OSX", "arm64"), consts.of("Linux", "x64"), consts.of("Linux", "arm64"),
+		local darwin, linux, arm, mips =
+			consts.of("OSX", "arm64"),
+			consts.of("Linux", "x64"),
+			consts.of("Linux", "arm64"),
 			consts.of("Linux", "mipsel")
 		assert.equal(35, darwin.EAGAIN)
 		assert.equal(11, linux.EAGAIN)
