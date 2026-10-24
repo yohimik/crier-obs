@@ -56,7 +56,6 @@ describe("crier pin", function()
 	end)
 
 	it("moves only crier's own version references when the pin is bumped", function()
-		pending("needs plugin/tools/update_pin.lua from the tools branch; main's copy also rewrites crier-obs links")
 		local root = os.tmpname()
 		os.remove(root)
 		assert(os.execute("mkdir -p '" .. root .. "/docs' '" .. root .. "/plugin/src/crier_obs/registry'"))

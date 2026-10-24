@@ -14,3 +14,5 @@ if [ "$modules" != "$bundled" ]; then
   exit 1
 fi
 luajit tools/smoke.lua dist/crier-obs.lua --version "$version" --pin "$(cat crier.version)"
+# The end-to-end specs once more, loading every module from the bundle rather than src/.
+CRIER_OBS_E2E_BUNDLE=dist/crier-obs.lua busted --lua=luajit --helper=spec/helper.lua spec/e2e
