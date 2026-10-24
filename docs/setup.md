@@ -4,20 +4,20 @@ Add `crier-obs.lua` through **Tools → Scripts → +**. The dialog is one long 
 
 ## The status rows
 
-Each row shows its label on the left and its state on the right.
+The dialog opens with a **Status** heading. Each row under it shows its label on the left and its state on the right.
 
 | Row | Shows |
 | --- | --- |
-| **crier** | `crier <version> at <path>`, `crier is not installed`, or `crier <version> at <path> (older than <pin>)`; while the installer runs, `Installing crier <pin>…`, `Checking installed crier…` or `Install failed: <reason>` |
-| **Credential store** | `macOS Keychain`, `Windows DPAPI (current user)`, `Secret Service` or `Encrypted credential file (Secret Service unavailable)` |
-| **Last run** | `No posts yet`, then the latest result, such as `Posted successfully` |
+| **crier** | `crier <version> at <path>`, `crier is not installed`, or `crier <version> at <path> (older than <pin>)`; while the installer runs, `Installing crier <pin>…`, `Checking installed crier…` or `Install failed: <reason>`; while the version is probed, `Checking crier version…`; when the probe fails, `Version check failed`, `Version check failed: <reason>`, `Version check timed out`, `Cannot read crier version`, `Invalid crier version` or `Configured crier path does not exist` |
+| **Credential store** | `macOS Keychain`, `Windows DPAPI (current user)`, `Secret Service` or `Encrypted credential file (Secret Service unavailable)`; `Secret Service (checking…)` while Linux probes it; `The <store> cannot be used: <error>` when the store cannot start |
+| **Last run** | `No posts yet`, then the latest result, such as `Posted successfully`, or `<result> (<platforms>)` naming the platforms that failed; `Post failed: <reason>` when a post fails before crier runs |
 | **Run logs** | the `runs` folder in the state folder |
 
 Press **Install crier** when crier is missing. The button reads **Update crier** when the discovered crier is older than the pinned crier v1.1.1. It runs crier's official installer for that version, which verifies the download against the digest GitHub publishes, and installs into the state folder's `bin`. **Install crier documentation** opens crier's [installing guide](https://github.com/yohimik/crier/blob/v1.1.1/docs/operations/install.md). A **crier path override** in **Advanced** takes precedence over discovery.
 
 ## Posting
 
-The seven triggers come next, each a checkbox and its caption. [Triggers](triggers.md) lists them with their defaults.
+A **Posting** heading starts this part. The seven triggers come next, each a checkbox and its caption. [Triggers](triggers.md) lists them with their defaults.
 
 **Post to** holds one checkbox per platform, then one per custom platform. The choices apply to every trigger. Every unticked destination is explicitly disabled, including destinations enabled in a base file.
 
@@ -25,7 +25,7 @@ Enter **Stream title**, **Game** and **Stream URL**. Add optional entries to **C
 
 | Button | What it does |
 | --- | --- |
-| **Check setup** | checks the executable, the credential store, staging, ffmpeg when video is on, the tunnel program when a tunnel mode is set, and each ticked platform's access |
+| **Check setup** | checks the executable, the credential store, staging, ffmpeg when video is on, the tunnel program when a tunnel mode is set, that a tunnel mode comes with `stage.mode` set to `server`, and each ticked platform's access |
 | **Refresh results** | redraws the dialog with the latest status and results |
 | **Send a test post (dry run)** | renders with **Manual caption** and posts nothing; the run folder gets `preview.png` |
 | **Post now** | publishes with **Manual caption** |

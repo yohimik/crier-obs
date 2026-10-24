@@ -4,7 +4,7 @@ Instagram, Threads and TikTok's photo flow do not take uploaded bytes. They fetc
 
 `stage.mode` decides it, and it defaults to `none`. With `none` and one of those platforms ticked, crier refuses to run before rendering anything, and the post fails with exit 1. A tunnel mode on its own does nothing: it only applies when `stage.mode` is `server`.
 
-Choose **Staging** in **Section**. Its guidance and its **Install ngrok**, **Install zrok**, **Staging guide** and **Tunnel guide** buttons come first, then `stage.mode`, then the `stage.server.tunnel.*` settings.
+Choose **Staging** in **Section**. Its guidance comes first. It starts each recipe with the stage mode to set: `server` for ngrok and zrok, with `stage.server.public-url` left empty, and `s3` for a bucket. The **Install ngrok**, **Install zrok**, **Staging guide** and **Tunnel guide** buttons follow; **Staging guide** opens crier's staging guide, then `stage.mode`, then the `stage.server.tunnel.*` settings.
 
 ## ngrok
 
@@ -38,4 +38,4 @@ S3 needs no tunnel.
 
 ## Check it
 
-**Check setup** reports staging in its `stage` row: `Staging is not enabled` for `none`, otherwise crier's ping of the target, or `This staging mode has no credentials to check`. When `stage.server.tunnel.mode` is set, a `tunnel` row shows the tunnel program's path, or `Cannot find <program>`. It does not compare the two settings, so check that `stage.mode` is `server` yourself.
+**Check setup** reports staging in its `stage` row: `Staging is not enabled` for `none`, otherwise crier's ping of the target, or `This staging mode has no credentials to check`. When `stage.server.tunnel.mode` is set, a `tunnel` row shows the tunnel program's path, or `Cannot find <program>`. When a tunnel mode is set but `stage.mode` is not `server`, the `tunnel` row warns `The <mode> tunnel starts only when Stage mode (stage.mode) is server`.

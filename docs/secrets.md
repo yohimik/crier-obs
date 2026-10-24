@@ -12,7 +12,7 @@ OBS's autosave moves a typed value into that memory and clears the field. It nev
 
 At load on Linux, the script stores, reads back and deletes a random test value in Secret Service. If that fails, it logs `Secret Service unavailable; credentials use the encrypted file store`, and the **Credential store** row reads `Encrypted credential file (Secret Service unavailable)`. The file store uses ChaCha20-Poly1305 with a random nonce per record, a key file with mode 0600 and records in a 0700 `secrets` folder. Its protection depends on your OS account and filesystem access.
 
-An index, `secrets/index.json`, records the store each value was saved in. If that store later becomes unavailable, the **Credential status** row reads `not stored: Stored credential backend is unavailable; unlock or restore it`. The script never moves a value into another store on its own, and never starts crier with an empty token in its place. Unlock your keychain or restore Secret Service and retry. A locked store reports `Credential store is locked; unlock it and try again`.
+An index, `secrets/index.json`, records the store each value was saved in. If that store later becomes unavailable, the **Credential status** row reads `stored in keyring (keyring unavailable: <store>)`, naming the store, or that store's own reason, such as `Credential store is locked; unlock it and try again`. The script never moves a value into another store on its own, and never starts crier with an empty token in its place. Unlock your keychain or restore Secret Service and retry.
 
 ## Accounts
 

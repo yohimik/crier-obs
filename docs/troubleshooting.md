@@ -14,6 +14,7 @@ Start with the **crier** and **Last run** rows, then press **Check setup** and *
 | 5 | `Publishing failed` | no platform took the post |
 | 6 | `Staging failed` | the media could not be given a public URL |
 | 97 | `Run directory is missing` | the macOS and Linux wrapper could not enter the run folder |
+| none | `Post failed: <reason>` | the post failed before crier ran, such as a missing credential store or a spawn error |
 | 126 | `crier is not executable` | followed by `On macOS, check the downloaded binary’s quarantine attribute.` |
 | 127 | `crier was not found` | |
 
@@ -29,6 +30,7 @@ The text after `crier-obs: `, with what to do about it.
 | `crier is not installed; click Install crier` | discovery found no crier; press **Install crier** or set **crier path override** |
 | `Configured crier path does not exist; click Install crier` | **crier path override** names a missing file |
 | `crier <version> at <path> is older than <pin>; click Update crier` | logged once; press **Update crier** |
+| `Version check failed: <reason>`, `Version check timed out`, `Cannot read crier version` or `Invalid crier version` | `crier --version --json` did not answer as crier does; check the file named in **crier path override**, or reinstall |
 | `Install failed: <reason>` | the installer failed; the **crier** row shows the same text |
 | `State directory is unavailable` | the state folder cannot be created or written; the **Run logs** row says why, and no post or check runs |
 | `No platform is selected; post skipped` | tick a platform in **Post to** |

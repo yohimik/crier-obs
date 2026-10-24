@@ -6,7 +6,7 @@ One 500 ms heartbeat pumps processes and the scheduler. There is no `script_tick
 
 ## Tools
 
-Use LuaJIT 2.1, busted 2.3.0, LuaCov 0.17.0, luacheck 1.2.0, shellcheck, actionlint and dispat 1.10.0. The LuaRocks packages must be visible to LuaJIT. On the development Mac, from the repository root:
+Use LuaJIT 2.1, busted 2.3.0, LuaCov 0.17.0, luacheck 1.2.0, StyLua 2.6.0 (`brew install stylua`), shellcheck, actionlint and dispat 1.10.0. The LuaRocks packages must be visible to LuaJIT. On the development Mac, from the repository root:
 
 ```sh
 export PATH="$HOME/.luarocks/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
@@ -25,12 +25,14 @@ Each gate is a script in `dispat.yaml`, run from `plugin/`. The `tools/*.sh` gat
 
 | Gate | Runs |
 | --- | --- |
-| `lint` | `tools/lint.sh`: `luacheck src tools spec`, then fails if runtime code calls the global `error`, `os.execute` or `io.popen` |
+| `lint` | `tools/lint.sh`: `luacheck src tools spec`, `stylua --check src spec tools` with `plugin/stylua.toml`, then fails if runtime code calls the global `error`, `os.execute` or `io.popen`; `plugin/.styluaignore` leaves the generated registry alone |
 | `shellcheck` | `shellcheck` over `tools/*.sh` and the shell fakes in `spec/fakes` |
 | `actionlint` | `actionlint` over `.github/workflows/*.yml` |
 | `registry` | `tools/registry_gate.sh`: regenerates the registry from the pinned crier and fails on any difference |
 | `tests` | `tools/test.sh`: every spec, then `tools/coverage_gate.lua` |
 | `bundle-check` | `tools/bundle_check.sh`: builds the bundle, smokes it, and runs the end-to-end specs against it |
+
+**Formatting.** StyLua formats `src`, `spec` and `tools/*.lua` with tabs and 120 columns. The generated `src/crier_obs/registry/*.lua` files are excluded, so the registry gate compares the generator's own output byte for byte. CI installs StyLua with Homebrew on macOS and with `tools/install_stylua.sh` on Linux, which downloads the pinned 2.6.0 release and checks its SHA-256 digest.
 
 **Tests.** `spec/helper.lua` disables JIT before LuaCov starts. It loads every `crier_obs` chunk in an environment whose `error` and `print` behave like OBS's hooks. The coverage gate counts untested source files as misses. It requires 95% overall, 90% per module, and 100% for the pure modules it names. The OBS stub in `spec/stub` tracks references, properties, callback identities, timer catch-up and event delivery. Process specs stress the garbage collector between building a pointer and the native call. Any Lua string or cdata put into an ffi array or struct must stay anchored until the call returns. Specs tagged `posix` need a POSIX host.
 
