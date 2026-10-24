@@ -8,7 +8,16 @@ source=${CRIER_SOURCE:-$cache/source}
 if [ ! -d "$source/.git" ]; then git clone --quiet --depth 1 --branch "v$pin" https://github.com/yohimik/crier.git "$source"; fi
 case "$(uname -s)" in Darwin) platform=darwin ;; Linux) platform=linux ;; *) echo 'Registry gate requires POSIX runner' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=amd64 ;; *) exit 1 ;; esac
-curl -fsSL "https://api.github.com/repos/yohimik/crier/releases/tags/v$pin" -o "$cache/release.json"
+if [ ! -s "$cache/release.json" ]; then
+  # Unauthenticated API calls share 60 an hour per address; the token header goes through stdin, not argv.
+  fetch() {
+    curl -fsSL -H 'Accept: application/vnd.github+json' "$@" \
+      "https://api.github.com/repos/yohimik/crier/releases/tags/v$pin" -o "$cache/release.json.part"
+  }
+  token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
+  if [ -n "$token" ]; then printf 'Authorization: Bearer %s\n' "$token" | fetch -H @-; else fetch; fi
+  mv "$cache/release.json.part" "$cache/release.json"
+fi
 if [ ! -x "$cache/crier" ]; then
   curl -fsSL "https://github.com/yohimik/crier/releases/download/v$pin/crier-$platform-$arch" -o "$cache/crier"
   chmod +x "$cache/crier"
