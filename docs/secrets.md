@@ -1,6 +1,6 @@
 # Save credentials
 
-Password fields are write-only. Paste a token and press **Save credentials** under the field. The script clears the OBS value at once, stores the token through the backend, reads it back, and shows `stored ✓` only when those bytes match. A failed save shows `not stored: <reason>` and keeps the typed value in memory, so the next **Save credentials** retries it. Press **Refresh results** after the operation finishes.
+Password fields are write-only. Paste a token and press **Save credentials** under the field. The script clears that field's OBS value at once, stores the token through the backend, reads it back, and shows `stored ✓` only when those bytes match. A failed save shows `not stored: <reason>` and keeps the typed value in memory, so the next **Save credentials** retries it. Other password fields keep what you typed until you save them. Press **Refresh results** after the operation finishes.
 
 OBS's autosave moves a typed value into that memory and clears the field. It never stores a credential. A value typed without pressing **Save credentials** is dropped when the script unloads, with the warning `Credentials typed but not saved`. Unticking a destination keeps its credentials. **Forget credentials** deletes that field's value from every store. **Forget all credentials in this credential set**, in **Advanced**, deletes every value in the named set.
 

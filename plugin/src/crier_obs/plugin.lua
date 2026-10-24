@@ -513,10 +513,12 @@ function M.new(deps)
 		end
 	end
 	-- Only a commit that is really queued touches the live session; a failed one re-resolves the stored
-	-- value, so a misclick on Save never leaves the quit post without credentials.
+	-- value, so a misclick on Save never leaves the quit post without credentials. Save takes only its
+	-- own field out of the settings: other typed fields keep their values through the dialog rebuild
+	-- until their own Save, script_save or the unload moves them into memory.
 	callbacks.save_secret = function(key)
 		if settings then
-			secrets.scrub(settings, nil, model.credential_set)
+			secrets.scrub(settings, { key }, model.credential_set)
 		end
 		local value = secrets.pending(model.credential_set, key)
 		if not value or value:match("^%s*$") then
